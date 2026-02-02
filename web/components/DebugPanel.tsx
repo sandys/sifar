@@ -22,59 +22,7 @@ export function DebugPanel() {
   }, []);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const existing = (window as any).__vaultDebugPatched;
-    if (existing) return;
-
-    (window as any).__vaultDebugPatched = true;
-    const levels: Array<keyof Console> = ['log', 'info', 'warn', 'error'];
-    const originals = new Map<keyof Console, (...args: any[]) => void>();
-
-    const format = (value: any) => {
-      if (typeof value === 'string') return value;
-      try {
-        return JSON.stringify(value);
-      } catch {
-        return String(value);
-      }
-    };
-
-    const stamp = () => new Date().toISOString();
-
-    levels.forEach((level) => {
-      const original = console[level].bind(console);
-      originals.set(level, original);
-      console[level] = (...args: any[]) => {
-        original(...args);
-        appendDebugLog(
-          `[${stamp()}] ${level.toUpperCase()} ${args.map(format).join(' ')}`
-        );
-      };
-    });
-
-    const onError = (event: ErrorEvent) => {
-      appendDebugLog(
-        `[${stamp()}] ERROR ${event.message} @ ${event.filename}:${event.lineno}:${event.colno}`
-      );
-    };
-    const onRejection = (event: PromiseRejectionEvent) => {
-      appendDebugLog(
-        `[${stamp()}] REJECTION ${format(event.reason)}`
-      );
-    };
-    window.addEventListener('error', onError);
-    window.addEventListener('unhandledrejection', onRejection);
-
-    return () => {
-      levels.forEach((level) => {
-        const original = originals.get(level);
-        if (original) {
-          console[level] = original;
-        }
-      });
-      window.removeEventListener('error', onError);
-      window.removeEventListener('unhandledrejection', onRejection);
-    };
+    appendDebugLog('[Debug] panel mounted');
   }, [appendDebugLog]);
 
   useEffect(() => {

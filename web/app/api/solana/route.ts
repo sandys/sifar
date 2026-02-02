@@ -34,6 +34,9 @@ export const runtime = 'nodejs';
 export async function POST(request: Request) {
   const body = await request.text();
   let lastError: unknown = null;
+  let lastStatus: number | null = null;
+  let lastText: string | null = null;
+  let lastRetryAfter: string | null = null;
 
   for (const url of getRpcUrls()) {
     try {
@@ -56,11 +59,16 @@ export async function POST(request: Request) {
 
       if (!response.ok && isRetryable(response.status, json)) {
         lastError = new Error(`RPC ${url} returned ${response.status}`);
+        lastStatus = response.status;
+        lastText = text;
+        lastRetryAfter = response.headers.get('retry-after');
         continue;
       }
 
       if (response.ok && isRetryable(200, json)) {
         lastError = new Error(`RPC ${url} returned ${json?.error?.code}`);
+        lastStatus = 429;
+        lastText = text;
         continue;
       }
 
@@ -82,11 +90,18 @@ export async function POST(request: Request) {
 
   const message =
     lastError instanceof Error ? lastError.message : 'RPC request failed';
+  if (lastStatus && lastText) {
+    return new NextResponse(lastText, {
+      status: lastStatus,
+      headers: {
+        'content-type': 'application/json',
+        ...(lastRetryAfter ? { 'retry-after': lastRetryAfter } : {})
+      }
+    });
+  }
+
   return NextResponse.json(
-    {
-      jsonrpc: '2.0',
-      error: { code: -32000, message }
-    },
+    { jsonrpc: '2.0', error: { code: -32000, message } },
     { status: 502 }
   );
 }
