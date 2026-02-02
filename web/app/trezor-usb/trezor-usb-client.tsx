@@ -3,12 +3,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
+import { LoadingSpinner } from '@/components/LoadingSpinner';
 import { getAllBalances } from '@/lib/solana';
-import {
-  getSolanaAddresses,
-  getTrezorDeviceInfo,
-  requestWebUSBDevice
-} from '@/lib/trezor';
+import { getSolanaAddress, getTrezorDeviceInfo, requestWebUSBDevice } from '@/lib/trezor';
 import { useAppStore } from '@/lib/store';
 
 export function TrezorUsbClient() {
@@ -22,10 +19,11 @@ export function TrezorUsbClient() {
     (state) => state.setTrezorDeviceInfo
   );
   const setSolanaAccounts = useAppStore((state) => state.setSolanaAccounts);
-  const [count, setCount] = useState(3);
+  const setStatusMessage = useAppStore((state) => state.setStatusMessage);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [onDeviceOnly, setOnDeviceOnly] = useState(false);
+  const [progress, setProgress] = useState({ scanned: 0, found: 0 });
 
   useEffect(() => {
     setPassphraseOnDeviceOnly(onDeviceOnly);
@@ -40,29 +38,86 @@ export function TrezorUsbClient() {
   const handleConnect = async () => {
     setError(null);
     setLoading(true);
+    setProgress({ scanned: 0, found: 0 });
+    setStatusMessage('Connecting to Trezor…');
     try {
       await requestWebUSBDevice();
-      const accounts = await getSolanaAddresses(count);
+      setStatusMessage('Fetching accounts…');
+
+      const accounts: Array<{
+        address: string;
+        path: string;
+        balance: number | null;
+        tokens: any[];
+      }> = [];
+
+      const GAP_LIMIT = 10;
+      const BATCH_SIZE = 5;
+      const MAX_ACCOUNTS = 200;
+      let consecutiveEmpty = 0;
+      let index = 0;
+      let found = 0;
+
+      while (index < MAX_ACCOUNTS && consecutiveEmpty < GAP_LIMIT) {
+        const batch = Array.from({ length: BATCH_SIZE })
+          .map((_, i) => index + i)
+          .filter((i) => i < MAX_ACCOUNTS);
+        if (batch.length === 0) break;
+
+        const batchAddresses = await Promise.all(
+          batch.map((i) => getSolanaAddress(i, i === 0))
+        );
+
+        const batchAccounts = await Promise.all(
+          batchAddresses.map(async (account) => {
+            const { sol, tokens } = await getAllBalances(account.address);
+            return {
+              address: account.address,
+              path: account.path,
+              balance: sol,
+              tokens
+            };
+          })
+        );
+
+        batchAccounts.forEach((account) => {
+          const hasBalance =
+            (account.balance ?? 0) > 0 || account.tokens.length > 0;
+          if (hasBalance) {
+            consecutiveEmpty = 0;
+            found += 1;
+          } else {
+            consecutiveEmpty += 1;
+          }
+          accounts.push(account);
+        });
+
+        index += batch.length;
+        setProgress({ scanned: index, found });
+        setSolanaAccounts([...accounts]);
+        setStatusMessage(`Scanned ${index} accounts`);
+      }
+
       const info = await getTrezorDeviceInfo();
-
-      const accountsWithBalances = await Promise.all(
-        accounts.map(async (account) => {
-          const { sol, tokens } = await getAllBalances(account.address);
-          return {
-            address: account.address,
-            path: account.path,
-            balance: sol,
-            tokens
-          };
-        })
-      );
-
       setTrezorConnected(true);
       setTrezorDeviceInfo(info);
-      setSolanaAccounts(accountsWithBalances);
+      setSolanaAccounts([...accounts]);
+      setStatusMessage('Ready');
     } catch (err: any) {
       setTrezorConnected(false);
-      setError(err.message || 'Failed to connect');
+      const message = err?.message || 'Failed to connect';
+      if (message.includes('No device selected')) {
+        setError(
+          'No device selected. Unlock your Trezor, then choose it in the Chrome USB prompt.'
+        );
+      } else if (message.includes('Transport_Missing')) {
+        setError(
+          'No Trezor detected. Make sure it is connected and unlocked before trying again.'
+        );
+      } else {
+        setError(message);
+      }
+      setStatusMessage(null);
     } finally {
       setLoading(false);
     }
@@ -84,21 +139,17 @@ export function TrezorUsbClient() {
           Require passphrase entry on device only
         </label>
         <div className="mt-4 flex items-center gap-3">
-          <label className="text-sm text-steel">
-            Accounts
-            <input
-              className="ml-2 w-20 rounded-lg border border-amber-200 px-2 py-1"
-              type="number"
-              min={1}
-              max={10}
-              value={count}
-              onChange={(event) => setCount(Number(event.target.value))}
-            />
-          </label>
           <Button onClick={handleConnect} disabled={loading}>
             {loading ? 'Connecting…' : 'Connect + List'}
           </Button>
         </div>
+        {loading && (
+          <div className="mt-4">
+            <LoadingSpinner
+              label={`Scanning accounts (${progress.scanned} scanned)`}
+            />
+          </div>
+        )}
         {error && <p className="mt-3 text-xs text-ember">{error}</p>}
         {connected && (
           <p className="mt-3 text-xs text-moss">Trezor connected.</p>

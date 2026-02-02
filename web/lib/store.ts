@@ -71,6 +71,7 @@ interface AppState {
   pendingProposal: PendingProposal | null;
   pendingRequest: PendingRequest | null;
   statusMessage: string | null;
+  debugLogs: string[];
 
   setTrezorConnected: (connected: boolean) => void;
   setTrezorDeviceInfo: (info: DeviceInfo | null) => void;
@@ -89,6 +90,8 @@ interface AppState {
   setPendingRequest: (request: PendingRequest | null) => void;
   clearPendingRequest: () => void;
   setStatusMessage: (message: string | null) => void;
+  appendDebugLog: (line: string) => void;
+  clearDebugLog: () => void;
 }
 
 export const useAppStore = create<AppState>()((set, get) => ({
@@ -107,6 +110,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   pendingProposal: null,
   pendingRequest: null,
   statusMessage: null,
+  debugLogs: [],
 
   setTrezorConnected: (connected) => set({ trezorConnected: connected }),
   setTrezorDeviceInfo: (info) => set({ trezorDeviceInfo: info }),
@@ -150,5 +154,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
   clearPendingProposal: () => set({ pendingProposal: null }),
   setPendingRequest: (request) => set({ pendingRequest: request }),
   clearPendingRequest: () => set({ pendingRequest: null }),
-  setStatusMessage: (message) => set({ statusMessage: message })
+  setStatusMessage: (message) => set({ statusMessage: message }),
+  appendDebugLog: (line) =>
+    set((state) => {
+      const next = [...state.debugLogs, line].slice(-500);
+      return { debugLogs: next };
+    }),
+  clearDebugLog: () => set({ debugLogs: [] })
 }));

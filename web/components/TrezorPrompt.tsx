@@ -258,7 +258,8 @@ export function TrezorPrompt() {
       return (
         <div className="grid gap-3">
           <p className="text-sm text-steel">
-            No Trezor detected. Make sure it is connected via USB-OTG and unlocked.
+            No Trezor detected. Make sure it is connected, unlocked, and then try
+            again.
           </p>
           <Button variant="ghost" onClick={handleCancel}>
             Close
