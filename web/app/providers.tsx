@@ -33,26 +33,33 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       useAppStore.getState().appendDebugLog(line);
     };
 
+    append('[Debug] console capture enabled');
+
+    const buffer = ((window as any).__vaultLogBuffer =
+      (window as any).__vaultLogBuffer || []);
+
     levels.forEach((level) => {
       const original = console[level].bind(console);
       originals.set(level, original);
       console[level] = (...args: any[]) => {
         original(...args);
-        append(
-          `[${stamp()}] ${level.toUpperCase()} ${args.map(format).join(' ')}`
-        );
+        const line = `[${stamp()}] ${level.toUpperCase()} ${args
+          .map(format)
+          .join(' ')}`;
+        buffer.push(line);
+        append(line);
       };
     });
 
     const onError = (event: ErrorEvent) => {
-      append(
-        `[${stamp()}] ERROR ${event.message} @ ${event.filename}:${event.lineno}:${event.colno}`
-      );
+      const line = `[${stamp()}] ERROR ${event.message} @ ${event.filename}:${event.lineno}:${event.colno}`;
+      buffer.push(line);
+      append(line);
     };
     const onRejection = (event: PromiseRejectionEvent) => {
-      append(
-        `[${stamp()}] REJECTION ${format(event.reason)}`
-      );
+      const line = `[${stamp()}] REJECTION ${format(event.reason)}`;
+      buffer.push(line);
+      append(line);
     };
     window.addEventListener('error', onError);
     window.addEventListener('unhandledrejection', onRejection);

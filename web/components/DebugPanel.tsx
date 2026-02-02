@@ -22,7 +22,11 @@ export function DebugPanel() {
   }, []);
 
   useEffect(() => {
-    appendDebugLog('[Debug] panel mounted');
+    if (typeof window === 'undefined') return;
+    const buffer = (window as any).__vaultLogBuffer;
+    if (Array.isArray(buffer) && buffer.length && debugLogs.length === 0) {
+      buffer.forEach((line: string) => appendDebugLog(line));
+    }
   }, [appendDebugLog]);
 
   useEffect(() => {

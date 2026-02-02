@@ -25,6 +25,27 @@ export function TrezorUsbClient() {
   const [onDeviceOnly, setOnDeviceOnly] = useState(false);
   const [progress, setProgress] = useState({ scanned: 0, found: 0 });
 
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const getBalancesWithRetry = async (address: string) => {
+    const MAX_RETRIES = 3;
+    let delay = 500;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+      try {
+        return await getAllBalances(address);
+      } catch (err: any) {
+        const message = err?.message || String(err);
+        if (message.includes('429') || message.includes('Too Many Requests')) {
+          await sleep(delay);
+          delay *= 2;
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw new Error('RPC rate limited');
+  };
+
   useEffect(() => {
     setPassphraseOnDeviceOnly(onDeviceOnly);
     return () => setPassphraseOnDeviceOnly(false);
@@ -64,38 +85,44 @@ export function TrezorUsbClient() {
           .filter((i) => i < MAX_ACCOUNTS);
         if (batch.length === 0) break;
 
-        const batchAddresses = await Promise.all(
-          batch.map((i) => getSolanaAddress(i, i === 0))
-        );
+        const batchAddresses = [];
+        for (const i of batch) {
+          batchAddresses.push(await getSolanaAddress(i, i === 0));
+        }
 
-        const batchAccounts = await Promise.all(
-          batchAddresses.map(async (account) => {
-            const { sol, tokens } = await getAllBalances(account.address);
-            return {
-              address: account.address,
-              path: account.path,
-              balance: sol,
-              tokens
-            };
-          })
-        );
-
-        batchAccounts.forEach((account) => {
+        for (const account of batchAddresses) {
+          let sol = 0;
+          let tokens: any[] = [];
+          try {
+            const balances = await getBalancesWithRetry(account.address);
+            sol = balances.sol;
+            tokens = balances.tokens;
+          } catch {
+            sol = 0;
+            tokens = [];
+          }
+          const accountEntry = {
+            address: account.address,
+            path: account.path,
+            balance: sol,
+            tokens
+          };
           const hasBalance =
-            (account.balance ?? 0) > 0 || account.tokens.length > 0;
+            (accountEntry.balance ?? 0) > 0 || accountEntry.tokens.length > 0;
           if (hasBalance) {
             consecutiveEmpty = 0;
             found += 1;
           } else {
             consecutiveEmpty += 1;
           }
-          accounts.push(account);
-        });
+          accounts.push(accountEntry);
+          setProgress({ scanned: accounts.length, found });
+          setSolanaAccounts([...accounts]);
+          setStatusMessage(`Scanned ${accounts.length} accounts`);
+          await sleep(250);
+        }
 
         index += batch.length;
-        setProgress({ scanned: index, found });
-        setSolanaAccounts([...accounts]);
-        setStatusMessage(`Scanned ${index} accounts`);
       }
 
       const info = await getTrezorDeviceInfo();
