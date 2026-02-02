@@ -62,6 +62,8 @@ interface AppState {
   trezorDeviceInfo: DeviceInfo | null;
   trezorUiRequest: { type: string; payload?: any } | null;
   passphraseOnDeviceOnly: boolean;
+  wcAutoApproveAddress: string | null;
+  wcProjectId: string | null;
   solanaAddress: string | null;
   solanaDerivationPath: string;
   solanaBalance: number | null;
@@ -79,6 +81,8 @@ interface AppState {
   setTrezorDeviceInfo: (info: DeviceInfo | null) => void;
   setTrezorUiRequest: (request: { type: string; payload?: any } | null) => void;
   setPassphraseOnDeviceOnly: (enabled: boolean) => void;
+  setWcAutoApproveAddress: (address: string | null) => void;
+  setWcProjectId: (projectId: string | null) => void;
   setSolanaAddress: (address: string, path: string) => void;
   setSolanaBalance: (balance: number | null) => void;
   setSplTokens: (tokens: SPLToken[]) => void;
@@ -114,6 +118,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
   trezorDeviceInfo: null,
   trezorUiRequest: null,
   passphraseOnDeviceOnly: false,
+  wcAutoApproveAddress: null,
+  wcProjectId: null,
   solanaAddress: null,
   solanaDerivationPath: "m/44'/501'/0'/0'",
   solanaBalance: null,
@@ -132,6 +138,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setTrezorUiRequest: (request) => set({ trezorUiRequest: request }),
   setPassphraseOnDeviceOnly: (enabled) =>
     set({ passphraseOnDeviceOnly: enabled }),
+  setWcAutoApproveAddress: (address) => set({ wcAutoApproveAddress: address }),
+  setWcProjectId: (projectId) => set({ wcProjectId: projectId }),
   setSolanaAddress: (address, path) =>
     set({ solanaAddress: address, solanaDerivationPath: path }),
   setSolanaBalance: (balance) => set({ solanaBalance: balance }),

@@ -2,7 +2,11 @@
 
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import TrezorConnect from '@/lib/trezorConnect';
-import { initWalletConnect } from '@/lib/walletconnect';
+import {
+  approveSessionProposal,
+  hasWalletConnectProjectId,
+  initWalletConnect
+} from '@/lib/walletconnect';
 import { handleSessionRequest } from '@/lib/signing';
 import { useAppStore } from '@/lib/store';
 
@@ -85,15 +89,38 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
 
     async function init() {
       try {
-        if (!process.env.NEXT_PUBLIC_WC_PROJECT_ID) {
-          console.warn('[WC] Skipping init: NEXT_PUBLIC_WC_PROJECT_ID missing');
+        if (!hasWalletConnectProjectId()) {
+          console.warn('[WC] Skipping init: WalletConnect Project ID missing');
           return;
         }
         const wallet = await initWalletConnect();
         setWcInitialized(true);
 
-        wallet.on('session_proposal', (proposal) => {
+        wallet.on('session_proposal', async (proposal) => {
           const { id, params } = proposal;
+          const store = useAppStore.getState();
+          const autoAddress = store.wcAutoApproveAddress;
+
+          if (autoAddress) {
+            try {
+              const session = await approveSessionProposal(id, autoAddress);
+              store.setActiveSession({
+                topic: session.topic,
+                peerName: session.peer.metadata.name,
+                peerUrl: session.peer.metadata.url,
+                peerIcon: session.peer.metadata.icons?.[0],
+                chains: Object.keys(session.namespaces || {})
+              });
+              store.setStatusMessage(
+                `Connected to ${session.peer.metadata.name}.`
+              );
+              store.setWcAutoApproveAddress(null);
+              return;
+            } catch (error) {
+              store.setWcAutoApproveAddress(null);
+            }
+          }
+
           setPendingProposal({
             id,
             proposer: params.proposer.metadata,

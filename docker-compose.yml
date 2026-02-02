@@ -10,13 +10,14 @@ services:
       - web_node_modules:/app/node_modules
       - web_next:/app/.next
     environment:
+      NEXT_PUBLIC_WC_PROJECT_ID: "32ee79473d9792d99fdb1b9c661e5331"
       NEXT_PUBLIC_TREZOR_DEBUG: "1"
       NEXT_TELEMETRY_DISABLED: "1"
       DEBUG: "next:*"
       NODE_OPTIONS: "--trace-warnings"
       CHOKIDAR_USEPOLLING: "1"
       WATCHPACK_POLLING: "true"
-    command: ["npx", "next", "dev", "--hostname", "0.0.0.0", "--port", "3001"]
+    command: ["sh", "-lc", "./scripts/dev.sh"]
 
 volumes:
   web_node_modules:

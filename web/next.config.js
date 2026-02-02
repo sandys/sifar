@@ -27,7 +27,7 @@ const nextConfig = {
             value: [
               "default-src 'self'",
               "script-src 'self' 'unsafe-eval' 'unsafe-inline'",
-              "connect-src 'self' wss://relay.walletconnect.com wss://relay.walletconnect.org https://api.mainnet.solana.com https://api.mainnet-beta.solana.com https://*.helius-rpc.com",
+              "connect-src 'self' wss://relay.walletconnect.com wss://relay.walletconnect.org https://verify.walletconnect.org https://pulse.walletconnect.org https://api.mainnet.solana.com https://api.mainnet-beta.solana.com https://*.helius-rpc.com",
               "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
               "font-src 'self' https://fonts.gstatic.com",
               "img-src 'self' data: https:"

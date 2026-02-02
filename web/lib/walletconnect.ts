@@ -2,19 +2,41 @@ import { Core } from '@walletconnect/core';
 import { Web3Wallet, IWeb3Wallet } from '@walletconnect/web3wallet';
 import { getSdkError } from '@walletconnect/utils';
 import { SOLANA_MAINNET_CAIP2 } from './constants';
+import { useAppStore } from './store';
 
 let web3wallet: IWeb3Wallet | null = null;
+let projectIdOverride: string | null = null;
 
-const WALLETCONNECT_PROJECT_ID = process.env.NEXT_PUBLIC_WC_PROJECT_ID || '';
+function getProjectId() {
+  const storeId =
+    typeof useAppStore === 'function'
+      ? useAppStore.getState().wcProjectId
+      : null;
+  return (
+    projectIdOverride ||
+    storeId ||
+    process.env.NEXT_PUBLIC_WC_PROJECT_ID ||
+    ''
+  );
+}
+
+export function setWalletConnectProjectId(projectId: string | null) {
+  projectIdOverride = projectId?.trim() || null;
+}
+
+export function hasWalletConnectProjectId() {
+  return !!getProjectId();
+}
 
 export async function initWalletConnect(): Promise<IWeb3Wallet> {
   if (web3wallet) return web3wallet;
-  if (!WALLETCONNECT_PROJECT_ID) {
+  const projectId = getProjectId();
+  if (!projectId) {
     throw new Error('Missing NEXT_PUBLIC_WC_PROJECT_ID');
   }
 
   const core = new Core({
-    projectId: WALLETCONNECT_PROJECT_ID
+    projectId
   }) as any;
 
   web3wallet = await Web3Wallet.init({

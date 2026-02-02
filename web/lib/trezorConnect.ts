@@ -21,6 +21,7 @@ type UiRequestPayload =
   | { type: 'ui-request_button'; payload?: { code?: number; name?: string } }
   | { type: 'ui-select_device'; payload: { devices: Descriptor[] } }
   | { type: 'ui-close_window' }
+  | { type: 'ui-error'; payload: { message: string } }
   | { type: 'ui-invalid_pin'; payload?: { attemptsLeft?: number } }
   | { type: 'ui-invalid_passphrase' }
   | { type: 'ui-no_transport' }
@@ -345,6 +346,9 @@ class TrezorConnectLike {
     }
 
     const transport = this.transport as any;
+    let hadError = false;
+    let retriedAfterFeatures = false;
+    let suppressUiError = false;
     try {
       this.log('Call', name);
       let response = await transport.call({
@@ -360,6 +364,20 @@ class TrezorConnectLike {
 
         const { type, message } = response.payload;
         this.log('Response', type);
+
+        if (type === 'Features' && name !== 'GetFeatures') {
+          this.features = message;
+          if (retriedAfterFeatures) {
+            throw new Error('Unexpected response: Features');
+          }
+          retriedAfterFeatures = true;
+          response = await transport.call({
+            session: this.session,
+            name,
+            data
+          });
+          continue;
+        }
 
         if (type === 'Failure') {
           const errorMessage = message?.message || 'Device failure';
@@ -401,21 +419,36 @@ class TrezorConnectLike {
         }
 
         if (type === 'PassphraseRequest') {
-          this.log('PassphraseRequest', message?._on_device);
+          const onDeviceFlag =
+            typeof message?.on_device !== 'undefined'
+              ? message?.on_device
+              : message?._on_device;
+          this.log('PassphraseRequest', onDeviceFlag);
           const passPayload = (await this.waitForUi({
             type: 'ui-receive_passphrase',
             request: {
               type: 'ui-request_passphrase',
-              payload: { onDeviceAllowed: !!message?._on_device }
+              payload: { onDeviceAllowed: !!onDeviceFlag }
             }
           })) as { passphrase?: string; onDevice?: boolean };
+          if (passPayload.onDevice) {
+            this.log('PassphraseAck', 'on-device');
+          } else {
+            this.log(
+              'PassphraseAck',
+              `length=${passPayload.passphrase ? passPayload.passphrase.length : 0}`
+            );
+          }
+          const ackData: Record<string, unknown> = {
+            passphrase: passPayload.passphrase || ''
+          };
+          if (passPayload.onDevice) {
+            ackData.on_device = true;
+          }
           response = await transport.call({
             session: this.session,
             name: 'PassphraseAck',
-            data: {
-              passphrase: passPayload.passphrase || '',
-              on_device: !!passPayload.onDevice
-            }
+            data: ackData
           });
           continue;
         }
@@ -436,8 +469,23 @@ class TrezorConnectLike {
 
         return { type, message };
       }
+    } catch (error: any) {
+      hadError = true;
+      const message = error?.message || 'Trezor error';
+      suppressUiError = name === 'SolanaGetAddress';
+      if (!suppressUiError) {
+        this.emitUi({
+          type: 'ui-error',
+          payload: { message }
+        });
+      } else {
+        this.log('Suppressed error', message);
+      }
+      throw error;
     } finally {
-      this.emitUi({ type: 'ui-close_window' });
+      if (!hadError || suppressUiError) {
+        this.emitUi({ type: 'ui-close_window' });
+      }
     }
   }
 

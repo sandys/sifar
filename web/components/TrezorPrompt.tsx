@@ -74,6 +74,8 @@ export function TrezorPrompt() {
         return 'Invalid PIN';
       case 'ui-invalid_passphrase':
         return 'Invalid Passphrase';
+      case 'ui-error':
+        return 'Trezor Error';
       default:
         return 'Trezor';
     }
@@ -163,24 +165,38 @@ export function TrezorPrompt() {
         );
       }
       return (
-        <div className="grid gap-4">
+        <form
+          className="grid gap-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!passphrase) return;
+            TrezorConnect.uiResponse({
+              type: 'ui-receive_passphrase',
+              payload: { passphrase }
+            });
+            setTrezorUiRequest(null);
+            setPassphrase('');
+          }}
+        >
           <p className="text-sm text-steel">
             Enter your passphrase or choose to type it directly on the device.
           </p>
           <input
             type="password"
+            autoComplete="off"
             className="w-full rounded-xl border border-amber-100 bg-white px-3 py-2 text-sm"
             value={passphrase}
             onChange={(event) => setPassphrase(event.target.value)}
             placeholder="Passphrase"
           />
           <div className="flex flex-wrap gap-3">
-            <Button variant="ghost" onClick={handleCancel}>
+            <Button variant="ghost" onClick={handleCancel} type="button">
               Cancel
             </Button>
             {allowOnDevice && (
               <Button
                 variant="ghost"
+                type="button"
                 onClick={() => {
                   TrezorConnect.uiResponse({
                     type: 'ui-receive_passphrase',
@@ -193,21 +209,11 @@ export function TrezorPrompt() {
                 Enter on Device
               </Button>
             )}
-            <Button
-              onClick={() => {
-                TrezorConnect.uiResponse({
-                  type: 'ui-receive_passphrase',
-                  payload: { passphrase }
-                });
-                setTrezorUiRequest(null);
-                setPassphrase('');
-              }}
-              disabled={!passphrase}
-            >
+            <Button type="submit" disabled={!passphrase}>
               Submit Passphrase
             </Button>
           </div>
-        </div>
+        </form>
       );
     }
 
@@ -265,6 +271,23 @@ export function TrezorPrompt() {
           <p className="text-sm text-steel">
             No Trezor detected. Make sure it is connected, unlocked, and then try
             again.
+          </p>
+          <Button variant="ghost" onClick={handleCancel}>
+            Close
+          </Button>
+        </div>
+      );
+    }
+
+    if (trezorUiRequest.type === 'ui-error') {
+      return (
+        <div className="grid gap-3">
+          <p className="text-sm text-ember">
+            {trezorUiRequest.payload?.message || 'Trezor reported an error.'}
+          </p>
+          <p className="text-xs text-steel">
+            Close this prompt and try the action again. If it repeats, reconnect
+            your Trezor.
           </p>
           <Button variant="ghost" onClick={handleCancel}>
             Close

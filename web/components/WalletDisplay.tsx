@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useEffect } from 'react';
 import { useAppStore } from '@/lib/store';
+import { WalletConnectModal } from '@/components/WalletConnectModal';
 
 export function WalletDisplay() {
   const solanaAccounts = useAppStore((state) => state.solanaAccounts);
@@ -17,6 +18,7 @@ export function WalletDisplay() {
   const [page, setPage] = useState(0);
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState<Set<number>>(() => new Set());
+  const [wcModalIndex, setWcModalIndex] = useState<number | null>(null);
   const pageSize = 5;
 
   const totalPages = useMemo(
@@ -40,6 +42,13 @@ export function WalletDisplay() {
     const timer = setTimeout(() => setCopiedAddress(null), 1200);
     return () => clearTimeout(timer);
   }, [copiedAddress]);
+
+  useEffect(() => {
+    if (wcModalIndex === null) return;
+    if (!solanaAccounts[wcModalIndex]) {
+      setWcModalIndex(null);
+    }
+  }, [solanaAccounts, wcModalIndex]);
 
   if (!solanaAddress) {
     return null;
@@ -74,12 +83,16 @@ export function WalletDisplay() {
               return (
                 <div
                   key={account.address}
-                  onClick={() => setActiveAccount(absoluteIndex)}
+                  onClick={() => {
+                    setActiveAccount(absoluteIndex);
+                    setWcModalIndex(absoluteIndex);
+                  }}
                   role="button"
                   tabIndex={0}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
                       setActiveAccount(absoluteIndex);
+                      setWcModalIndex(absoluteIndex);
                     }
                   }}
                   className={`flex items-start justify-between gap-3 rounded-2xl border px-3 py-2 text-left text-sm transition ${
@@ -219,6 +232,13 @@ export function WalletDisplay() {
           </div>
         )}
       </div>
+      <WalletConnectModal
+        open={wcModalIndex !== null}
+        account={
+          wcModalIndex !== null ? solanaAccounts[wcModalIndex] : undefined
+        }
+        onClose={() => setWcModalIndex(null)}
+      />
     </section>
   );
 }

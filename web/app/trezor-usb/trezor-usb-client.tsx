@@ -64,27 +64,36 @@ export function TrezorUsbClient() {
       const MAX_ACCOUNTS = 200;
       let connectedSet = false;
       for (let i = 0; i < MAX_ACCOUNTS; i += 1) {
-        const account = await getSolanaAddress(i, i === 0);
-        const accountEntry = {
-          address: account.address,
-          path: account.path,
-          balance: null,
-          tokens: [],
-          balanceStatus: 'loading' as const,
-          balanceError: null
-        };
-        accounts.push(accountEntry);
-        setSolanaAccounts([...accounts]);
-        if (i === 0) {
-          setLoading(false);
-          setEnumerating(true);
+        try {
+          const account = await getSolanaAddress(i, i === 0);
+          const accountEntry = {
+            address: account.address,
+            path: account.path,
+            balance: null,
+            tokens: [],
+            balanceStatus: 'loading' as const,
+            balanceError: null
+          };
+          accounts.push(accountEntry);
+          setSolanaAccounts([...accounts]);
+          if (i === 0) {
+            setLoading(false);
+            setEnumerating(true);
+          }
+          if (!connectedSet) {
+            connectedSet = true;
+            setTrezorConnected(true);
+            deviceInfoPromise.then((info) => setTrezorDeviceInfo(info));
+          }
+          setProgress({ scanned: accounts.length, found: 0 });
+        } catch (err: any) {
+          const message = err?.message || '';
+          if (message.includes('Forbidden key path')) {
+            setStatusMessage('Reached end of supported Solana accounts.');
+            break;
+          }
+          throw err;
         }
-        if (!connectedSet) {
-          connectedSet = true;
-          setTrezorConnected(true);
-          deviceInfoPromise.then((info) => setTrezorDeviceInfo(info));
-        }
-        setProgress({ scanned: accounts.length, found: 0 });
       }
 
       setSolanaAccounts([...accounts]);

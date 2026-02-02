@@ -1,4 +1,7 @@
 import { TrezorPrompt } from '@/components/TrezorPrompt';
+import { SessionApproval } from '@/components/SessionApproval';
+import { TransactionPreview } from '@/components/TransactionPreview';
+import { SigningFlow } from '@/components/SigningFlow';
 import { WalletDisplay } from '@/components/WalletDisplay';
 import { DebugPanel } from '@/components/DebugPanel';
 import { TrezorUsbClient } from './trezor-usb-client';
@@ -31,6 +34,9 @@ export default function TrezorUsbPage() {
         <TrezorPrompt />
         <TrezorUsbClient />
         <WalletDisplay />
+        <SessionApproval />
+        <TransactionPreview />
+        <SigningFlow />
         <DebugPanel />
       </div>
     </main>
