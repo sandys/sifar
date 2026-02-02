@@ -1,6 +1,6 @@
 import { Core } from '@walletconnect/core';
 import { Web3Wallet, IWeb3Wallet } from '@walletconnect/web3wallet';
-import { getSdkError } from '@walletconnect/utils';
+import { buildApprovedNamespaces, getSdkError } from '@walletconnect/utils';
 import { SOLANA_MAINNET_CAIP2 } from './constants';
 import { useAppStore } from './store';
 
@@ -58,33 +58,90 @@ export function getWeb3Wallet(): IWeb3Wallet {
 }
 
 export async function pairWithDApp(wcUri: string): Promise<void> {
+  console.log('[WC] pairWithDApp called with URI:', wcUri.substring(0, 50) + '...');
   const wallet = await initWalletConnect();
+  console.log('[WC] Calling wallet.core.pairing.pair...');
   await wallet.core.pairing.pair({ uri: wcUri });
+  console.log('[WC] Pairing complete, waiting for session_proposal event');
+}
+
+const DEFAULT_SOLANA_METHODS = [
+  'solana_signTransaction',
+  'solana_signMessage',
+  'solana_signAllTransactions',
+  'solana_signAndSendTransaction'
+];
+
+function collectSolanaRequest(
+  requiredNamespaces?: Record<string, any>,
+  optionalNamespaces?: Record<string, any>
+) {
+  const chains = new Set<string>();
+  const methods = new Set<string>();
+  const events = new Set<string>();
+
+  const addNamespace = (key: string, ns: any) => {
+    if (!ns) return;
+    if (key.includes(':')) {
+      const [namespace] = key.split(':');
+      if (namespace === 'solana') {
+        chains.add(key);
+      }
+    }
+    if (key === 'solana') {
+      (ns.chains || []).forEach((chain: string) => chains.add(chain));
+    }
+    (ns.methods || []).forEach((method: string) => methods.add(method));
+    (ns.events || []).forEach((event: string) => events.add(event));
+  };
+
+  Object.entries(requiredNamespaces || {}).forEach(([key, ns]) =>
+    addNamespace(key, ns)
+  );
+  Object.entries(optionalNamespaces || {}).forEach(([key, ns]) =>
+    addNamespace(key, ns)
+  );
+
+  return {
+    chains: chains.size ? Array.from(chains) : [SOLANA_MAINNET_CAIP2],
+    methods: methods.size ? Array.from(methods) : DEFAULT_SOLANA_METHODS,
+    events: events.size ? Array.from(events) : []
+  };
 }
 
 export async function approveSessionProposal(
   proposalId: number,
   solanaAddress: string,
+  requiredNamespaces?: Record<string, any>,
+  optionalNamespaces?: Record<string, any>,
   ethereumAddress?: string
 ): Promise<any> {
   const wallet = getWeb3Wallet();
 
-  const namespaces: Record<string, any> = {
+  console.log('[WC] approveSessionProposal called', {
+    proposalId,
+    solanaAddress,
+    requiredNamespaces,
+    optionalNamespaces
+  });
+
+  const solanaRequest = collectSolanaRequest(
+    requiredNamespaces,
+    optionalNamespaces
+  );
+  const supportedNamespaces: Record<string, any> = {
     solana: {
-      chains: [SOLANA_MAINNET_CAIP2],
-      methods: [
-        'solana_signTransaction',
-        'solana_signMessage',
-        'solana_signAllTransactions',
-        'solana_signAndSendTransaction'
-      ],
-      events: [],
-      accounts: [`${SOLANA_MAINNET_CAIP2}:${solanaAddress}`]
+      chains: solanaRequest.chains,
+      methods: DEFAULT_SOLANA_METHODS,
+      events: solanaRequest.events,
+      accounts: solanaRequest.chains.map(
+        (chain: string) => `${chain}:${solanaAddress}`
+      )
     }
   };
 
   if (ethereumAddress) {
-    namespaces.eip155 = {
+    supportedNamespaces.eip155 = {
       chains: ['eip155:1'],
       methods: [
         'eth_sendTransaction',
@@ -97,9 +154,27 @@ export async function approveSessionProposal(
     };
   }
 
+  console.log('[WC] Building namespaces with', { supportedNamespaces });
+
+  const namespaces = buildApprovedNamespaces({
+    proposal: {
+      requiredNamespaces: requiredNamespaces || {},
+      optionalNamespaces: optionalNamespaces || {}
+    },
+    supportedNamespaces
+  });
+
+  console.log('[WC] Built namespaces:', namespaces);
+  console.log('[WC] Calling wallet.approveSession...');
+
   const session = await wallet.approveSession({
     id: proposalId,
     namespaces
+  });
+
+  console.log('[WC] Session approved successfully:', {
+    topic: session.topic,
+    peer: session.peer?.metadata?.name
   });
 
   return session;

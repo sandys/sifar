@@ -59,7 +59,11 @@ export function WalletConnectModal({
   useEffect(() => {
     if (!open) return;
     if (activeSession) {
-      const timer = setTimeout(() => onClose(), 800);
+      // Give WalletConnect relay time to propagate session_settle to dApp
+      const timer = setTimeout(() => {
+        console.log('[Modal] Auto-closing after session established');
+        onClose();
+      }, 1500);
       return () => clearTimeout(timer);
     }
     return undefined;
@@ -244,6 +248,16 @@ export function WalletConnectModal({
           {error && <p className="mt-2 text-ember">{error}</p>}
         </div>
 
+        <div className="mt-3 rounded-2xl border border-amber-200/60 bg-white/70 p-3 text-[11px] text-steel">
+          <p className="font-semibold text-amber-700">
+            Note on approvals
+          </p>
+          <p className="mt-1">
+            Session approval does not use Trezor. Hardware confirmation only
+            happens when a signing request arrives (transactions or messages).
+          </p>
+        </div>
+
         {pendingProposal && account && (
           <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50/60 p-4 text-xs text-ink">
             <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-amber-700">
@@ -262,13 +276,18 @@ export function WalletConnectModal({
                 type="button"
                 className="rounded-lg border border-amber-200 px-3 py-1 text-xs uppercase tracking-wide text-steel"
                 onClick={async () => {
+                  console.log('[Modal] Approve clicked, proposalId:', pendingProposal.id);
                   setBusy(true);
                   setError(null);
                   try {
+                    console.log('[Modal] Calling approveSessionProposal...');
                     const session = await approveSessionProposal(
                       pendingProposal.id,
-                      account.address
+                      account.address,
+                      pendingProposal.requiredNamespaces,
+                      pendingProposal.optionalNamespaces
                     );
+                    console.log('[Modal] Session approved, topic:', session.topic);
                     setActiveSession({
                       topic: session.topic,
                       peerName: session.peer.metadata.name,
@@ -276,9 +295,12 @@ export function WalletConnectModal({
                       peerIcon: session.peer.metadata.icons?.[0],
                       chains: Object.keys(session.namespaces || {})
                     });
+                    console.log('[Modal] ActiveSession set, clearing pendingProposal');
                     setPendingProposal(null);
                     setStatus(`Connected to ${session.peer.metadata.name}.`);
+                    console.log('[Modal] Approval flow complete');
                   } catch (err: any) {
+                    console.error('[Modal] Approval failed:', err);
                     setError(err?.message || 'Failed to approve session.');
                   } finally {
                     setBusy(false);

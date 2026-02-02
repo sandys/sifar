@@ -5,7 +5,8 @@ import TrezorConnect from '@/lib/trezorConnect';
 import {
   approveSessionProposal,
   hasWalletConnectProjectId,
-  initWalletConnect
+  initWalletConnect,
+  setWalletConnectProjectId
 } from '@/lib/walletconnect';
 import { handleSessionRequest } from '@/lib/signing';
 import { useAppStore } from '@/lib/store';
@@ -15,7 +16,16 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
   const setPendingProposal = useAppStore((state) => state.setPendingProposal);
   const removeActiveSession = useAppStore((state) => state.removeActiveSession);
   const setTrezorUiRequest = useAppStore((state) => state.setTrezorUiRequest);
+  const setWcProjectId = useAppStore((state) => state.setWcProjectId);
   const initialized = useRef(false);
+
+  useEffect(() => {
+    const envProjectId = process.env.NEXT_PUBLIC_WC_PROJECT_ID;
+    if (envProjectId) {
+      setWcProjectId(envProjectId);
+      setWalletConnectProjectId(envProjectId);
+    }
+  }, [setWcProjectId]);
 
   useLayoutEffect(() => {
     if (typeof window === 'undefined') return;
@@ -98,12 +108,25 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
 
         wallet.on('session_proposal', async (proposal) => {
           const { id, params } = proposal;
+          console.log('[WC] session_proposal received', {
+            id,
+            proposer: params.proposer.metadata.name,
+            requiredNamespaces: params.requiredNamespaces,
+            optionalNamespaces: params.optionalNamespaces
+          });
           const store = useAppStore.getState();
           const autoAddress = store.wcAutoApproveAddress;
 
           if (autoAddress) {
+            console.log('[WC] Auto-approving with address:', autoAddress);
             try {
-              const session = await approveSessionProposal(id, autoAddress);
+              const session = await approveSessionProposal(
+                id,
+                autoAddress,
+                params.requiredNamespaces,
+                params.optionalNamespaces
+              );
+              console.log('[WC] Auto-approval successful, session topic:', session.topic);
               store.setActiveSession({
                 topic: session.topic,
                 peerName: session.peer.metadata.name,
@@ -117,10 +140,12 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
               store.setWcAutoApproveAddress(null);
               return;
             } catch (error) {
+              console.error('[WC] Auto-approval failed:', error);
               store.setWcAutoApproveAddress(null);
             }
           }
 
+          console.log('[WC] Setting pendingProposal for manual approval');
           setPendingProposal({
             id,
             proposer: params.proposer.metadata,

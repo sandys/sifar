@@ -30,7 +30,12 @@ export function SessionApproval() {
     setLoading(true);
     setError(null);
     try {
-      const session = await approveSessionProposal(id, solanaAddress);
+      const session = await approveSessionProposal(
+        id,
+        solanaAddress,
+        pendingProposal.requiredNamespaces,
+        pendingProposal.optionalNamespaces
+      );
       setActiveSession({
         topic: session.topic,
         peerName: session.peer.metadata.name,

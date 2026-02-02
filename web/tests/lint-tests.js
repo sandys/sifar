@@ -210,6 +210,54 @@ try {
   );
 }
 
+// Ensure WalletConnect approval uses buildApprovedNamespaces (prevents silent mismatch).
+try {
+  const wcFile = readRepoFile('web/lib/walletconnect.ts');
+  if (!wcFile.includes('buildApprovedNamespaces')) {
+    addError(
+      'web/lib/walletconnect.ts',
+      'WalletConnect approvals must use buildApprovedNamespaces.'
+    );
+  }
+} catch (error) {
+  addError('web/lib/walletconnect.ts', 'Missing walletconnect approval file.');
+}
+
+// Ensure WalletConnect modal shows session approval note and uses env project ID.
+try {
+  const modal = readRepoFile('web/components/WalletConnectModal.tsx');
+  if (!modal.includes('Session approval does not use Trezor')) {
+    addError(
+      'web/components/WalletConnectModal.tsx',
+      'WalletConnect modal must explain that session approval does not use Trezor.'
+    );
+  }
+  if (!modal.includes('Connect WalletConnect')) {
+    addError(
+      'web/components/WalletConnectModal.tsx',
+      'WalletConnect modal must expose a Connect WalletConnect CTA.'
+    );
+  }
+} catch (error) {
+  addError(
+    'web/components/WalletConnectModal.tsx',
+    'Missing WalletConnect modal for lint.'
+  );
+}
+
+// Ensure env WC project ID is propagated into store.
+try {
+  const storeFile = readRepoFile('web/lib/store.ts');
+  if (!storeFile.includes('NEXT_PUBLIC_WC_PROJECT_ID')) {
+    addError(
+      'web/lib/store.ts',
+      'Store should seed wcProjectId from NEXT_PUBLIC_WC_PROJECT_ID.'
+    );
+  }
+} catch (error) {
+  addError('web/lib/store.ts', 'Missing store for WC project ID lint.');
+}
+
 if (errors.length) {
   console.error('Lint tests failed:\n' + errors.map((e) => `- ${e}`).join('\n'));
   process.exit(1);

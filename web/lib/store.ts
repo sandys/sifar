@@ -119,7 +119,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   trezorUiRequest: null,
   passphraseOnDeviceOnly: false,
   wcAutoApproveAddress: null,
-  wcProjectId: null,
+  wcProjectId: process.env.NEXT_PUBLIC_WC_PROJECT_ID || null,
   solanaAddress: null,
   solanaDerivationPath: "m/44'/501'/0'/0'",
   solanaBalance: null,
