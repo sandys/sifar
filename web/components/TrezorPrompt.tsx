@@ -47,8 +47,13 @@ function PinPad({
 }
 
 export function TrezorPrompt() {
-  const { trezorUiRequest, passphraseOnDeviceOnly, setTrezorUiRequest } =
-    useAppStore();
+  const trezorUiRequest = useAppStore((state) => state.trezorUiRequest);
+  const passphraseOnDeviceOnly = useAppStore(
+    (state) => state.passphraseOnDeviceOnly
+  );
+  const setTrezorUiRequest = useAppStore(
+    (state) => state.setTrezorUiRequest
+  );
   const [pin, setPin] = useState('');
   const [passphrase, setPassphrase] = useState('');
 

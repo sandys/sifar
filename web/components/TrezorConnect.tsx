@@ -12,7 +12,11 @@ import { getAllBalances } from '@/lib/solana';
 import { useAppStore } from '@/lib/store';
 
 export function TrezorConnect() {
-  const store = useAppStore();
+  const setTrezorConnected = useAppStore((state) => state.setTrezorConnected);
+  const setTrezorDeviceInfo = useAppStore(
+    (state) => state.setTrezorDeviceInfo
+  );
+  const setSolanaAccounts = useAppStore((state) => state.setSolanaAccounts);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,8 +27,8 @@ export function TrezorConnect() {
       await requestWebUSBDevice();
       const accounts = await getSolanaAddresses(3);
       const info = await getTrezorDeviceInfo();
-      store.setTrezorConnected(true);
-      store.setTrezorDeviceInfo(info);
+      setTrezorConnected(true);
+      setTrezorDeviceInfo(info);
 
       const accountsWithBalances = await Promise.all(
         accounts.map(async (account) => {
@@ -38,9 +42,9 @@ export function TrezorConnect() {
         })
       );
 
-      store.setSolanaAccounts(accountsWithBalances);
+      setSolanaAccounts(accountsWithBalances);
     } catch (err: any) {
-      store.setTrezorConnected(false);
+      setTrezorConnected(false);
       setError(err.message || 'Failed to connect to Trezor');
     } finally {
       setLoading(false);

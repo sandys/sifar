@@ -5,7 +5,8 @@ import { Sheet } from '@/components/ui/Sheet';
 import { useAppStore } from '@/lib/store';
 
 export function TransactionPreview() {
-  const { pendingRequest, clearPendingRequest } = useAppStore();
+  const pendingRequest = useAppStore((state) => state.pendingRequest);
+  const clearPendingRequest = useAppStore((state) => state.clearPendingRequest);
 
   const summary = useMemo(() => {
     if (!pendingRequest) return null;

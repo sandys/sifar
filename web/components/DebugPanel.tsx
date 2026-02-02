@@ -4,16 +4,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAppStore } from '@/lib/store';
 
 export function DebugPanel() {
-  const {
-    trezorConnected,
-    trezorUiRequest,
-    solanaAddress,
-    solanaAccounts,
-    statusMessage,
-    debugLogs,
-    appendDebugLog,
-    clearDebugLog
-  } = useAppStore();
+  const trezorConnected = useAppStore((state) => state.trezorConnected);
+  const trezorUiRequest = useAppStore((state) => state.trezorUiRequest);
+  const solanaAddress = useAppStore((state) => state.solanaAddress);
+  const solanaAccounts = useAppStore((state) => state.solanaAccounts);
+  const statusMessage = useAppStore((state) => state.statusMessage);
+  const debugLogs = useAppStore((state) => state.debugLogs);
+  const appendDebugLog = useAppStore((state) => state.appendDebugLog);
+  const clearDebugLog = useAppStore((state) => state.clearDebugLog);
   const [mounted, setMounted] = useState(false);
   const [copyLabel, setCopyLabel] = useState('Copy');
 

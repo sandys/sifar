@@ -15,7 +15,7 @@ export function Scanner({ onScanSuccess, onScanError }: ScannerProps) {
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const store = useAppStore();
+  const setStatusMessage = useAppStore((state) => state.setStatusMessage);
 
   const startScanning = useCallback(async () => {
     try {
@@ -39,11 +39,11 @@ export function Scanner({ onScanSuccess, onScanError }: ScannerProps) {
           }
 
           try {
-            store.setStatusMessage('Pairing with dApp...');
+            setStatusMessage('Pairing with dApp...');
             await pairWithDApp(decodedText);
-            store.setStatusMessage('Pairing request sent. Awaiting approval.');
+            setStatusMessage('Pairing request sent. Awaiting approval.');
           } catch (err: any) {
-            store.setStatusMessage(null);
+            setStatusMessage(null);
             setError(err.message || 'Pairing failed');
           }
         },
@@ -58,7 +58,7 @@ export function Scanner({ onScanSuccess, onScanError }: ScannerProps) {
       setError(message);
       onScanError?.(message);
     }
-  }, [onScanSuccess, onScanError, store]);
+  }, [onScanSuccess, onScanError, setStatusMessage]);
 
   useEffect(() => {
     return () => {

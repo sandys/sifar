@@ -4,7 +4,9 @@ import { useMemo } from 'react';
 import { useAppStore } from '@/lib/store';
 
 export function StatusBar() {
-  const { trezorConnected, wcInitialized, activeSession } = useAppStore();
+  const trezorConnected = useAppStore((state) => state.trezorConnected);
+  const wcInitialized = useAppStore((state) => state.wcInitialized);
+  const activeSession = useAppStore((state) => state.activeSession);
 
   const webUsbSupported = useMemo(() => {
     if (typeof navigator === 'undefined') return false;

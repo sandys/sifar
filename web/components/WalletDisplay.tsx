@@ -4,15 +4,13 @@ import { useMemo, useState, useEffect } from 'react';
 import { useAppStore } from '@/lib/store';
 
 export function WalletDisplay() {
-  const {
-    solanaAccounts,
-    activeAccountIndex,
-    solanaAddress,
-    solanaBalance,
-    splTokens,
-    trezorDeviceInfo,
-    setActiveAccount
-  } = useAppStore();
+  const solanaAccounts = useAppStore((state) => state.solanaAccounts);
+  const activeAccountIndex = useAppStore((state) => state.activeAccountIndex);
+  const solanaAddress = useAppStore((state) => state.solanaAddress);
+  const solanaBalance = useAppStore((state) => state.solanaBalance);
+  const splTokens = useAppStore((state) => state.splTokens);
+  const trezorDeviceInfo = useAppStore((state) => state.trezorDeviceInfo);
+  const setActiveAccount = useAppStore((state) => state.setActiveAccount);
   const [page, setPage] = useState(0);
   const pageSize = 5;
 

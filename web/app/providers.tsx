@@ -7,7 +7,10 @@ import { handleSessionRequest } from '@/lib/signing';
 import { useAppStore } from '@/lib/store';
 
 export function AppProviders({ children }: { children: React.ReactNode }) {
-  const store = useAppStore();
+  const setWcInitialized = useAppStore((state) => state.setWcInitialized);
+  const setPendingProposal = useAppStore((state) => state.setPendingProposal);
+  const removeActiveSession = useAppStore((state) => state.removeActiveSession);
+  const setTrezorUiRequest = useAppStore((state) => state.setTrezorUiRequest);
   const initialized = useRef(false);
 
   useLayoutEffect(() => {
@@ -74,7 +77,7 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       window.removeEventListener('error', onError);
       window.removeEventListener('unhandledrejection', onRejection);
     };
-  }, [store]);
+  }, []);
 
   useEffect(() => {
     if (initialized.current) return;
@@ -87,11 +90,11 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
           return;
         }
         const wallet = await initWalletConnect();
-        store.setWcInitialized(true);
+        setWcInitialized(true);
 
         wallet.on('session_proposal', (proposal) => {
           const { id, params } = proposal;
-          store.setPendingProposal({
+          setPendingProposal({
             id,
             proposer: params.proposer.metadata,
             requiredNamespaces: params.requiredNamespaces,
@@ -104,7 +107,7 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
         });
 
         wallet.on('session_delete', (event) => {
-          store.removeActiveSession(event.topic);
+          removeActiveSession(event.topic);
         });
       } catch (error) {
         console.error('[WC] Init failed:', error);
@@ -112,22 +115,22 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
     }
 
     init();
-  }, [store]);
+  }, [removeActiveSession, setPendingProposal, setWcInitialized]);
 
   useEffect(() => {
     const handler = (event: { type: string; payload?: any }) => {
       if (event.type === 'ui-close_window') {
-        store.setTrezorUiRequest(null);
+        setTrezorUiRequest(null);
         return;
       }
-      store.setTrezorUiRequest(event);
+      setTrezorUiRequest(event);
     };
 
     TrezorConnect.on(handler);
     return () => {
       TrezorConnect.off(handler);
     };
-  }, [store]);
+  }, [setTrezorUiRequest]);
 
   return <>{children}</>;
 }

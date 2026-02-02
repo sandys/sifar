@@ -7,8 +7,13 @@ import { approveSessionProposal, rejectSessionProposal } from '@/lib/walletconne
 import { useAppStore } from '@/lib/store';
 
 export function SessionApproval() {
-  const store = useAppStore();
-  const { pendingProposal, solanaAddress } = store;
+  const pendingProposal = useAppStore((state) => state.pendingProposal);
+  const solanaAddress = useAppStore((state) => state.solanaAddress);
+  const setActiveSession = useAppStore((state) => state.setActiveSession);
+  const clearPendingProposal = useAppStore(
+    (state) => state.clearPendingProposal
+  );
+  const setStatusMessage = useAppStore((state) => state.setStatusMessage);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -26,15 +31,15 @@ export function SessionApproval() {
     setError(null);
     try {
       const session = await approveSessionProposal(id, solanaAddress);
-      store.setActiveSession({
+      setActiveSession({
         topic: session.topic,
         peerName: session.peer.metadata.name,
         peerUrl: session.peer.metadata.url,
         peerIcon: session.peer.metadata.icons?.[0],
         chains: Object.keys(session.namespaces || {})
       });
-      store.clearPendingProposal();
-      store.setStatusMessage(`Connected to ${proposer.name}.`);
+      clearPendingProposal();
+      setStatusMessage(`Connected to ${proposer.name}.`);
     } catch (err: any) {
       setError(err.message || 'Failed to approve session');
     } finally {
@@ -47,7 +52,7 @@ export function SessionApproval() {
     setError(null);
     try {
       await rejectSessionProposal(id);
-      store.clearPendingProposal();
+      clearPendingProposal();
     } catch (err: any) {
       setError(err.message || 'Failed to reject session');
     } finally {

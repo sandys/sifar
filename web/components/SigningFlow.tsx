@@ -13,7 +13,7 @@ import {
 import { useAppStore } from '@/lib/store';
 
 export function SigningFlow() {
-  const { pendingRequest } = useAppStore();
+  const pendingRequest = useAppStore((state) => state.pendingRequest);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
