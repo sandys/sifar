@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
-import { getAllBalances } from '@/lib/solana';
 import { getSolanaAddress, getTrezorDeviceInfo, requestWebUSBDevice } from '@/lib/trezor';
 import { useAppStore } from '@/lib/store';
 
@@ -19,7 +18,9 @@ export function TrezorUsbClient() {
     (state) => state.setTrezorDeviceInfo
   );
   const setSolanaAccounts = useAppStore((state) => state.setSolanaAccounts);
-  const updateSolanaAccount = useAppStore((state) => state.updateSolanaAccount);
+  const refreshSolanaAccountBalance = useAppStore(
+    (state) => state.refreshSolanaAccountBalance
+  );
   const setStatusMessage = useAppStore((state) => state.setStatusMessage);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,25 +28,6 @@ export function TrezorUsbClient() {
   const [progress, setProgress] = useState({ scanned: 0, found: 0 });
 
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-  const getBalancesWithRetry = async (address: string) => {
-    const MAX_RETRIES = 3;
-    let delay = 500;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
-      try {
-        return await getAllBalances(address);
-      } catch (err: any) {
-        const message = err?.message || String(err);
-        if (message.includes('429') || message.includes('Too Many Requests')) {
-          await sleep(delay);
-          delay *= 2;
-          continue;
-        }
-        throw err;
-      }
-    }
-    throw new Error('RPC rate limited');
-  };
 
   useEffect(() => {
     setPassphraseOnDeviceOnly(onDeviceOnly);
@@ -64,7 +46,7 @@ export function TrezorUsbClient() {
     setStatusMessage('Connecting to Trezor…');
     try {
       await requestWebUSBDevice();
-      setStatusMessage('Fetching accounts…');
+      setStatusMessage('Fetching addresses…');
 
       const accounts: Array<{
         address: string;
@@ -75,76 +57,44 @@ export function TrezorUsbClient() {
         balanceError?: string | null;
       }> = [];
 
-      const GAP_LIMIT = 10;
-      const BATCH_SIZE = 5;
       const MAX_ACCOUNTS = 200;
-      let consecutiveEmpty = 0;
-      let index = 0;
-      let found = 0;
-
-      while (index < MAX_ACCOUNTS && consecutiveEmpty < GAP_LIMIT) {
-        const batch = Array.from({ length: BATCH_SIZE })
-          .map((_, i) => index + i)
-          .filter((i) => i < MAX_ACCOUNTS);
-        if (batch.length === 0) break;
-
-        const batchAddresses = [];
-        for (const i of batch) {
-          batchAddresses.push(await getSolanaAddress(i, i === 0));
-        }
-
-        for (const account of batchAddresses) {
-          const accountIndex = accounts.length;
-          const accountEntry = {
-            address: account.address,
-            path: account.path,
-            balance: null,
-            tokens: [],
-            balanceStatus: 'loading' as const,
-            balanceError: null
-          };
-          accounts.push(accountEntry);
-          setSolanaAccounts([...accounts]);
-          setProgress({ scanned: accounts.length, found });
-          setStatusMessage(`Scanned ${accounts.length} accounts`);
-
-          try {
-            const { sol, tokens } = await getBalancesWithRetry(account.address);
-            updateSolanaAccount(accountIndex, {
-              balance: sol,
-              tokens,
-              balanceStatus: 'ok',
-              balanceError: null
-            });
-            const hasBalance = sol > 0 || tokens.length > 0;
-            if (hasBalance) {
-              consecutiveEmpty = 0;
-              found += 1;
-            } else {
-              consecutiveEmpty += 1;
-            }
-          } catch (err: any) {
-            updateSolanaAccount(accountIndex, {
-              balance: null,
-              tokens: [],
-              balanceStatus: 'error',
-              balanceError: err?.message || 'Balance failed'
-            });
-            consecutiveEmpty += 1;
-          }
-
-          setProgress({ scanned: accounts.length, found });
-          await sleep(250);
-        }
-
-        index += batch.length;
+      for (let i = 0; i < MAX_ACCOUNTS; i += 1) {
+        const account = await getSolanaAddress(i, i === 0);
+        const accountEntry = {
+          address: account.address,
+          path: account.path,
+          balance: null,
+          tokens: [],
+          balanceStatus: 'loading' as const,
+          balanceError: null
+        };
+        accounts.push(accountEntry);
+        setSolanaAccounts([...accounts]);
+        setProgress({ scanned: accounts.length, found: 0 });
       }
 
       const info = await getTrezorDeviceInfo();
       setTrezorConnected(true);
       setTrezorDeviceInfo(info);
       setSolanaAccounts([...accounts]);
-      setStatusMessage('Ready');
+      setLoading(false);
+      setStatusMessage('Refreshing balances…');
+
+      const refreshBalances = async () => {
+        for (let i = 0; i < accounts.length; i += 1) {
+          await refreshSolanaAccountBalance(i);
+          if (i < accounts.length - 1) {
+            await sleep(5000);
+          }
+        }
+        setStatusMessage('Ready');
+      };
+
+      refreshBalances().catch((refreshError) => {
+        // eslint-disable-next-line no-console
+        console.warn('[Balances] refresh failed', refreshError);
+        setStatusMessage('Balance refresh failed');
+      });
     } catch (err: any) {
       setTrezorConnected(false);
       const message = err?.message || 'Failed to connect';
