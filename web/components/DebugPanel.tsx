@@ -26,37 +26,37 @@ export function DebugPanel() {
   }, [appendDebugLog]);
 
   useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log('[VaultDebug] env', {
-      location: typeof window !== 'undefined' ? window.location.href : 'server',
-      secureContext:
-        typeof window !== 'undefined' ? window.isSecureContext : false,
-      userAgent:
-        typeof navigator !== 'undefined' ? navigator.userAgent : 'server',
-      hasWebUSB:
-        typeof navigator !== 'undefined' ? !!(navigator as any).usb : false
-    });
-  }, []);
+    appendDebugLog(
+      `[Env] ${typeof window !== 'undefined' ? window.location.href : 'server'}`
+    );
+    appendDebugLog(
+      `[Env] secureContext=${typeof window !== 'undefined' ? window.isSecureContext : false}`
+    );
+    appendDebugLog(
+      `[Env] userAgent=${typeof navigator !== 'undefined' ? navigator.userAgent : 'server'}`
+    );
+    appendDebugLog(
+      `[Env] webusb=${typeof navigator !== 'undefined' && (navigator as any).usb ? 'available' : 'missing'}`
+    );
+  }, [appendDebugLog]);
 
   useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log('[VaultDebug] trezorConnected', trezorConnected);
-  }, [trezorConnected]);
+    appendDebugLog(`[State] trezorConnected=${trezorConnected}`);
+  }, [appendDebugLog, trezorConnected]);
 
   useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log('[VaultDebug] trezorUiRequest', trezorUiRequest);
-  }, [trezorUiRequest]);
+    appendDebugLog(
+      `[State] trezorUiRequest=${trezorUiRequest?.type || 'none'}`
+    );
+  }, [appendDebugLog, trezorUiRequest]);
 
   useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log('[VaultDebug] solanaAddress', solanaAddress);
-  }, [solanaAddress]);
+    appendDebugLog(`[State] solanaAddress=${solanaAddress || '—'}`);
+  }, [appendDebugLog, solanaAddress]);
 
   useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log('[VaultDebug] solanaAccounts', solanaAccounts.length);
-  }, [solanaAccounts.length]);
+    appendDebugLog(`[State] solanaAccounts=${solanaAccounts.length}`);
+  }, [appendDebugLog, solanaAccounts.length]);
 
   const logText = useMemo(() => debugLogs.join('\n'), [debugLogs]);
 

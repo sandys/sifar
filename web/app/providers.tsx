@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import TrezorConnect from '@/lib/trezorConnect';
 import { initWalletConnect } from '@/lib/walletconnect';
 import { handleSessionRequest } from '@/lib/signing';
@@ -10,7 +10,7 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
   const store = useAppStore();
   const initialized = useRef(false);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (typeof window === 'undefined') return;
     if ((window as any).__vaultConsolePatched) return;
     (window as any).__vaultConsolePatched = true;
@@ -29,24 +29,28 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
 
     const stamp = () => new Date().toISOString();
 
+    const append = (line: string) => {
+      useAppStore.getState().appendDebugLog(line);
+    };
+
     levels.forEach((level) => {
       const original = console[level].bind(console);
       originals.set(level, original);
       console[level] = (...args: any[]) => {
         original(...args);
-        store.appendDebugLog(
+        append(
           `[${stamp()}] ${level.toUpperCase()} ${args.map(format).join(' ')}`
         );
       };
     });
 
     const onError = (event: ErrorEvent) => {
-      store.appendDebugLog(
+      append(
         `[${stamp()}] ERROR ${event.message} @ ${event.filename}:${event.lineno}:${event.colno}`
       );
     };
     const onRejection = (event: PromiseRejectionEvent) => {
-      store.appendDebugLog(
+      append(
         `[${stamp()}] REJECTION ${format(event.reason)}`
       );
     };
