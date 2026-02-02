@@ -21,6 +21,8 @@ interface SolanaAccount {
   path: string;
   balance: number | null;
   tokens: SPLToken[];
+  balanceStatus: 'loading' | 'ok' | 'error';
+  balanceError?: string | null;
 }
 
 interface WCSession {
@@ -90,8 +92,21 @@ interface AppState {
   setPendingRequest: (request: PendingRequest | null) => void;
   clearPendingRequest: () => void;
   setStatusMessage: (message: string | null) => void;
+  updateSolanaAccount: (index: number, update: Partial<SolanaAccount>) => void;
+  refreshSolanaAccountBalance: (index: number) => Promise<void>;
   appendDebugLog: (line: string) => void;
   clearDebugLog: () => void;
+}
+
+function normalizeAccount(account: SolanaAccount): SolanaAccount {
+  const balanceStatus =
+    account.balanceStatus ||
+    (account.balance === null ? 'loading' : 'ok');
+  return {
+    ...account,
+    balanceStatus,
+    balanceError: account.balanceError ?? null
+  };
 }
 
 export const useAppStore = create<AppState>()((set, get) => ({
@@ -122,9 +137,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setSolanaBalance: (balance) => set({ solanaBalance: balance }),
   setSplTokens: (tokens) => set({ splTokens: tokens }),
   setSolanaAccounts: (accounts) => {
-    const first = accounts[0];
+    const normalized = accounts.map(normalizeAccount);
+    const first = normalized[0];
     set({
-      solanaAccounts: accounts,
+      solanaAccounts: normalized,
       activeAccountIndex: 0,
       solanaAddress: first?.address ?? null,
       solanaDerivationPath: first?.path ?? "m/44'/501'/0'/0'",
@@ -155,6 +171,56 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setPendingRequest: (request) => set({ pendingRequest: request }),
   clearPendingRequest: () => set({ pendingRequest: null }),
   setStatusMessage: (message) => set({ statusMessage: message }),
+  updateSolanaAccount: (index, update) =>
+    set((state) => {
+      const accounts = [...state.solanaAccounts];
+      if (!accounts[index]) return state;
+      const nextAccount = normalizeAccount({
+        ...accounts[index],
+        ...update
+      });
+      accounts[index] = nextAccount;
+      const updates: Partial<AppState> = { solanaAccounts: accounts };
+      if (index === state.activeAccountIndex) {
+        updates.solanaAddress = nextAccount.address;
+        updates.solanaDerivationPath = nextAccount.path;
+        updates.solanaBalance = nextAccount.balance;
+        updates.splTokens = nextAccount.tokens;
+      }
+      return updates as AppState;
+    }),
+  refreshSolanaAccountBalance: async (index) => {
+    const { solanaAccounts } = get();
+    const account = solanaAccounts[index];
+    if (!account) return;
+    set((state) => {
+      const accounts = [...state.solanaAccounts];
+      if (!accounts[index]) return state;
+      accounts[index] = {
+        ...accounts[index],
+        balanceStatus: 'loading',
+        balanceError: null
+      };
+      return { solanaAccounts: accounts } as AppState;
+    });
+    try {
+      const { getAllBalances } = await import('./solana');
+      const { sol, tokens } = await getAllBalances(account.address);
+      get().updateSolanaAccount(index, {
+        balance: sol,
+        tokens,
+        balanceStatus: 'ok',
+        balanceError: null
+      });
+    } catch (err: any) {
+      get().updateSolanaAccount(index, {
+        balance: null,
+        tokens: [],
+        balanceStatus: 'error',
+        balanceError: err?.message || 'Balance failed'
+      });
+    }
+  },
   appendDebugLog: (line) =>
     set((state) => {
       const next = [...state.debugLogs, line].slice(-500);

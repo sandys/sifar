@@ -19,6 +19,7 @@ export function TrezorUsbClient() {
     (state) => state.setTrezorDeviceInfo
   );
   const setSolanaAccounts = useAppStore((state) => state.setSolanaAccounts);
+  const updateSolanaAccount = useAppStore((state) => state.updateSolanaAccount);
   const setStatusMessage = useAppStore((state) => state.setStatusMessage);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,6 +71,8 @@ export function TrezorUsbClient() {
         path: string;
         balance: number | null;
         tokens: any[];
+        balanceStatus: 'loading' | 'ok' | 'error';
+        balanceError?: string | null;
       }> = [];
 
       const GAP_LIMIT = 10;
@@ -91,34 +94,46 @@ export function TrezorUsbClient() {
         }
 
         for (const account of batchAddresses) {
-          let sol = 0;
-          let tokens: any[] = [];
-          try {
-            const balances = await getBalancesWithRetry(account.address);
-            sol = balances.sol;
-            tokens = balances.tokens;
-          } catch {
-            sol = 0;
-            tokens = [];
-          }
+          const accountIndex = accounts.length;
           const accountEntry = {
             address: account.address,
             path: account.path,
-            balance: sol,
-            tokens
+            balance: null,
+            tokens: [],
+            balanceStatus: 'loading' as const,
+            balanceError: null
           };
-          const hasBalance =
-            (accountEntry.balance ?? 0) > 0 || accountEntry.tokens.length > 0;
-          if (hasBalance) {
-            consecutiveEmpty = 0;
-            found += 1;
-          } else {
+          accounts.push(accountEntry);
+          setSolanaAccounts([...accounts]);
+          setProgress({ scanned: accounts.length, found });
+          setStatusMessage(`Scanned ${accounts.length} accounts`);
+
+          try {
+            const { sol, tokens } = await getBalancesWithRetry(account.address);
+            updateSolanaAccount(accountIndex, {
+              balance: sol,
+              tokens,
+              balanceStatus: 'ok',
+              balanceError: null
+            });
+            const hasBalance = sol > 0 || tokens.length > 0;
+            if (hasBalance) {
+              consecutiveEmpty = 0;
+              found += 1;
+            } else {
+              consecutiveEmpty += 1;
+            }
+          } catch (err: any) {
+            updateSolanaAccount(accountIndex, {
+              balance: null,
+              tokens: [],
+              balanceStatus: 'error',
+              balanceError: err?.message || 'Balance failed'
+            });
             consecutiveEmpty += 1;
           }
-          accounts.push(accountEntry);
+
           setProgress({ scanned: accounts.length, found });
-          setSolanaAccounts([...accounts]);
-          setStatusMessage(`Scanned ${accounts.length} accounts`);
           await sleep(250);
         }
 

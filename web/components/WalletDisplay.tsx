@@ -11,6 +11,9 @@ export function WalletDisplay() {
   const splTokens = useAppStore((state) => state.splTokens);
   const trezorDeviceInfo = useAppStore((state) => state.trezorDeviceInfo);
   const setActiveAccount = useAppStore((state) => state.setActiveAccount);
+  const refreshSolanaAccountBalance = useAppStore(
+    (state) => state.refreshSolanaAccountBalance
+  );
   const [page, setPage] = useState(0);
   const pageSize = 5;
 
@@ -58,32 +61,72 @@ export function WalletDisplay() {
             {pageAccounts.map((account, index) => {
               const absoluteIndex = page * pageSize + index;
               return (
-                <button
+                <div
                   key={account.address}
                   onClick={() => setActiveAccount(absoluteIndex)}
-                  className={`flex items-center justify-between rounded-2xl border px-3 py-2 text-left text-sm transition ${
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      setActiveAccount(absoluteIndex);
+                    }
+                  }}
+                  className={`flex items-start justify-between gap-3 rounded-2xl border px-3 py-2 text-left text-sm transition ${
                     absoluteIndex === activeAccountIndex
                       ? 'border-ember bg-ember/10'
                       : 'border-amber-100 bg-white'
                   }`}
                 >
-                  <div>
-                    <p className="font-mono text-xs">
-                      {account.address.slice(0, 6)}…{account.address.slice(-6)}
-                    </p>
-                    <p className="text-xs text-steel">
+                  <div className="flex-1">
+                    <div className="flex items-start gap-2">
+                      <p className="break-all font-mono text-[11px]">
+                        {account.address}
+                      </p>
+                      <button
+                        type="button"
+                        className="shrink-0 rounded-md border border-amber-200 px-2 py-0.5 text-[10px] uppercase tracking-wide text-steel"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          navigator.clipboard.writeText(account.address);
+                        }}
+                      >
+                        Copy
+                      </button>
+                    </div>
+                    <p className="mt-1 text-[10px] text-steel">
                       Path {account.path.replace('m/', '')}
                     </p>
                   </div>
                   <div className="text-right">
-                    <p className="text-xs text-steel">SOL</p>
-                    <p className="font-display text-sm">
-                      {account.balance !== null
-                        ? account.balance.toFixed(3)
-                        : '—'}
-                    </p>
+                    <p className="text-[10px] text-steel">SOL</p>
+                    <div className="flex items-center justify-end gap-2">
+                      <p
+                        className={`font-display text-sm ${
+                          account.balanceStatus === 'error'
+                            ? 'text-ember'
+                            : ''
+                        }`}
+                      >
+                        {account.balanceStatus === 'loading' && '…'}
+                        {account.balanceStatus === 'error' && '⚠'}
+                        {account.balanceStatus === 'ok' &&
+                          account.balance !== null
+                          ? account.balance.toFixed(3)
+                          : ''}
+                      </p>
+                      <button
+                        type="button"
+                        className="rounded-md border border-amber-200 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-steel"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          refreshSolanaAccountBalance(absoluteIndex);
+                        }}
+                      >
+                        ↻
+                      </button>
+                    </div>
                   </div>
-                </button>
+                </div>
               );
             })}
             {totalPages > 1 && (
