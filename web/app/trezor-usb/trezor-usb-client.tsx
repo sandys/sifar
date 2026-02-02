@@ -23,6 +23,7 @@ export function TrezorUsbClient() {
   );
   const setStatusMessage = useAppStore((state) => state.setStatusMessage);
   const [loading, setLoading] = useState(false);
+  const [enumerating, setEnumerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [onDeviceOnly, setOnDeviceOnly] = useState(false);
   const [progress, setProgress] = useState({ scanned: 0, found: 0 });
@@ -42,11 +43,14 @@ export function TrezorUsbClient() {
   const handleConnect = async () => {
     setError(null);
     setLoading(true);
+    setEnumerating(false);
     setProgress({ scanned: 0, found: 0 });
     setStatusMessage('Connecting to Trezor…');
     try {
       await requestWebUSBDevice();
       setStatusMessage('Fetching addresses…');
+
+      const deviceInfoPromise = getTrezorDeviceInfo().catch(() => null);
 
       const accounts: Array<{
         address: string;
@@ -58,6 +62,7 @@ export function TrezorUsbClient() {
       }> = [];
 
       const MAX_ACCOUNTS = 200;
+      let connectedSet = false;
       for (let i = 0; i < MAX_ACCOUNTS; i += 1) {
         const account = await getSolanaAddress(i, i === 0);
         const accountEntry = {
@@ -70,14 +75,20 @@ export function TrezorUsbClient() {
         };
         accounts.push(accountEntry);
         setSolanaAccounts([...accounts]);
+        if (i === 0) {
+          setLoading(false);
+          setEnumerating(true);
+        }
+        if (!connectedSet) {
+          connectedSet = true;
+          setTrezorConnected(true);
+          deviceInfoPromise.then((info) => setTrezorDeviceInfo(info));
+        }
         setProgress({ scanned: accounts.length, found: 0 });
       }
 
-      const info = await getTrezorDeviceInfo();
-      setTrezorConnected(true);
-      setTrezorDeviceInfo(info);
       setSolanaAccounts([...accounts]);
-      setLoading(false);
+      setEnumerating(false);
       setStatusMessage('Refreshing balances…');
 
       const refreshBalances = async () => {
@@ -110,6 +121,7 @@ export function TrezorUsbClient() {
         setError(message);
       }
       setStatusMessage(null);
+      setEnumerating(false);
     } finally {
       setLoading(false);
     }
@@ -137,10 +149,13 @@ export function TrezorUsbClient() {
         </div>
         {loading && (
           <div className="mt-4">
-            <LoadingSpinner
-              label={`Scanning accounts (${progress.scanned} scanned)`}
-            />
+            <LoadingSpinner label="Waiting for Trezor…" />
           </div>
+        )}
+        {!loading && enumerating && (
+          <p className="mt-3 text-xs text-steel">
+            Loading accounts in the background ({progress.scanned} loaded).
+          </p>
         )}
         {error && <p className="mt-3 text-xs text-ember">{error}</p>}
         {connected && (

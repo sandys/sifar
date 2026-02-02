@@ -15,6 +15,8 @@ export function WalletDisplay() {
     (state) => state.refreshSolanaAccountBalance
   );
   const [page, setPage] = useState(0);
+  const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState<Set<number>>(() => new Set());
   const pageSize = 5;
 
   const totalPages = useMemo(
@@ -32,6 +34,12 @@ export function WalletDisplay() {
     const start = page * pageSize;
     return solanaAccounts.slice(start, start + pageSize);
   }, [page, pageSize, solanaAccounts]);
+
+  useEffect(() => {
+    if (!copiedAddress) return;
+    const timer = setTimeout(() => setCopiedAddress(null), 1200);
+    return () => clearTimeout(timer);
+  }, [copiedAddress]);
 
   if (!solanaAddress) {
     return null;
@@ -60,6 +68,9 @@ export function WalletDisplay() {
             </p>
             {pageAccounts.map((account, index) => {
               const absoluteIndex = page * pageSize + index;
+              const isRefreshing =
+                refreshing.has(absoluteIndex) ||
+                account.balanceStatus === 'loading';
               return (
                 <div
                   key={account.address}
@@ -84,13 +95,18 @@ export function WalletDisplay() {
                       </p>
                       <button
                         type="button"
-                        className="shrink-0 rounded-md border border-amber-200 px-2 py-0.5 text-[10px] uppercase tracking-wide text-steel"
+                        className={`shrink-0 rounded-md border border-amber-200 px-2 py-0.5 text-[10px] uppercase tracking-wide ${
+                          copiedAddress === account.address
+                            ? 'bg-amber-200 text-ink'
+                            : 'text-steel'
+                        }`}
                         onClick={(event) => {
                           event.stopPropagation();
                           navigator.clipboard.writeText(account.address);
+                          setCopiedAddress(account.address);
                         }}
                       >
-                        Copy
+                        {copiedAddress === account.address ? 'Copied' : 'Copy'}
                       </button>
                     </div>
                     <p className="mt-1 text-[10px] text-steel">
@@ -119,10 +135,29 @@ export function WalletDisplay() {
                         className="rounded-md border border-amber-200 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-steel"
                         onClick={(event) => {
                           event.stopPropagation();
-                          refreshSolanaAccountBalance(absoluteIndex);
+                          setRefreshing((prev) => {
+                            const next = new Set(prev);
+                            next.add(absoluteIndex);
+                            return next;
+                          });
+                          refreshSolanaAccountBalance(absoluteIndex)
+                            .catch(() => {})
+                            .finally(() => {
+                              setRefreshing((prev) => {
+                                const next = new Set(prev);
+                                next.delete(absoluteIndex);
+                                return next;
+                              });
+                            });
                         }}
                       >
-                        ↻
+                        <span
+                          className={`inline-block transition-transform ${
+                            isRefreshing ? 'animate-spin' : ''
+                          }`}
+                        >
+                          ↻
+                        </span>
                       </button>
                     </div>
                   </div>
