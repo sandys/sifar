@@ -65,12 +65,22 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
         String(restored.activeAccountIndex)
       );
 
-      // Trigger balance fetches for all restored accounts
-      restored.accounts.forEach((_, index) => {
-        refreshSolanaAccountBalance(index).catch((err) => {
-          console.warn('[URL State] Balance fetch failed for account', index, err);
+      // Store session hints for WC init to use later
+      if (restored.sessionHints.length > 0) {
+        sessionStorage.setItem(
+          'urlState_sessionHints',
+          JSON.stringify(restored.sessionHints)
+        );
+      }
+
+      // Only refresh the active account's balance to avoid rate limiting
+      // Other balances will be fetched on-demand when the user views them
+      const activeIndex = restored.activeAccountIndex;
+      if (activeIndex >= 0 && activeIndex < restored.accounts.length) {
+        refreshSolanaAccountBalance(activeIndex).catch((err) => {
+          console.warn('[URL State] Balance fetch failed for active account', err);
         });
-      });
+      }
 
       // Clear the hash after restoring to avoid re-restoration on refresh
       // (user can generate new URL when needed)
@@ -167,6 +177,67 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
         }
         const wallet = await initWalletConnect();
         setWcInitialized(true);
+
+        // Sync existing sessions from WC IndexedDB to our store
+        const existingSessions = wallet.getActiveSessions();
+        const sessionTopics = Object.keys(existingSessions);
+
+        // Get session hints from URL state (if available)
+        const hintsJson = sessionStorage.getItem('urlState_sessionHints');
+        const sessionHints: Array<{ topic: string; peerName: string; walletAddress: string }> =
+          hintsJson ? JSON.parse(hintsJson) : [];
+        sessionStorage.removeItem('urlState_sessionHints');
+
+        console.log('[WC] Session sync:', {
+          existingInIndexedDB: sessionTopics.length,
+          hintsFromUrl: sessionHints.length,
+          existingTopics: sessionTopics.map(t => t.substring(0, 16) + '...'),
+          hintTopics: sessionHints.map(h => h.topic.substring(0, 16) + '...')
+        });
+
+        if (sessionTopics.length > 0) {
+
+          const store = useAppStore.getState();
+
+          for (const topic of sessionTopics) {
+            const session = existingSessions[topic];
+            const hint = sessionHints.find((h) => h.topic === topic);
+
+            // Extract wallet address from hint or from session namespaces
+            let walletAddress = hint?.walletAddress;
+            if (!walletAddress) {
+              // Try to extract from session namespaces (e.g., "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp:ADDRESS")
+              const solanaNamespace = session.namespaces?.solana;
+              const accounts = solanaNamespace?.accounts || [];
+              if (accounts.length > 0) {
+                const parts = accounts[0].split(':');
+                walletAddress = parts[parts.length - 1];
+              }
+            }
+
+            if (walletAddress) {
+              console.log('[WC] Restoring session:', {
+                topic: topic.substring(0, 16) + '...',
+                peer: session.peer?.metadata?.name,
+                walletAddress
+              });
+
+              store.addActiveSession({
+                topic,
+                peerName: session.peer?.metadata?.name || 'Unknown',
+                peerUrl: session.peer?.metadata?.url || '',
+                peerIcon: session.peer?.metadata?.icons?.[0],
+                chains: Object.keys(session.namespaces || {}),
+                walletAddress
+              });
+            }
+          }
+        } else if (sessionHints.length > 0) {
+          // URL had session hints but IndexedDB has no sessions
+          // This happens in a fresh browser - sessions can't be restored
+          console.warn('[WC] URL contained session hints but no matching sessions in IndexedDB.');
+          console.warn('[WC] Sessions must be re-established - scan QR codes again.');
+        }
 
         wallet.on('session_proposal', async (proposal) => {
           const { id, params } = proposal;

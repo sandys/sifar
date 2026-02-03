@@ -22,9 +22,8 @@ docker compose exec web node tests/lint-tests.js
 # TypeScript check
 docker compose exec web npx tsc --noEmit
 
-# Build (run after lint passes, then restart dev server)
-docker compose exec web npx next build
-docker compose restart web
+# Build (REQUIRED after code changes, before restart)
+docker compose exec web npx next build && docker compose restart web
 
 # Full test suite
 docker compose exec web npm test

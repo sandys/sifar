@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { approveSessionProposal, rejectSessionProposal } from '@/lib/walletconnect';
@@ -16,6 +16,31 @@ export function SessionApproval() {
   const setStatusMessage = useAppStore((state) => state.setStatusMessage);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [timeLeft, setTimeLeft] = useState<number | null>(null);
+
+  // Countdown timer for proposal expiration
+  useEffect(() => {
+    if (!pendingProposal?.params?.expiryTimestamp) {
+      setTimeLeft(null);
+      return;
+    }
+
+    const updateTimer = () => {
+      const now = Math.floor(Date.now() / 1000);
+      const remaining = pendingProposal.params.expiryTimestamp - now;
+      if (remaining <= 0) {
+        setTimeLeft(0);
+        clearPendingProposal();
+        setStatusMessage('Session proposal expired. Please scan the QR code again.');
+      } else {
+        setTimeLeft(remaining);
+      }
+    };
+
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+    return () => clearInterval(interval);
+  }, [pendingProposal, clearPendingProposal, setStatusMessage]);
 
   if (!pendingProposal) return null;
 
@@ -46,7 +71,14 @@ export function SessionApproval() {
       clearPendingProposal();
       setStatusMessage(`Connected to ${proposer.name}.`);
     } catch (err: any) {
-      setError(err.message || 'Failed to approve session');
+      const message = err.message || 'Failed to approve session';
+      // Handle expired/deleted proposal errors gracefully
+      if (message.includes('expired') || message.includes('deleted') || message.includes('No matching key')) {
+        clearPendingProposal();
+        setStatusMessage('Session proposal expired. Please scan the QR code again.');
+      } else {
+        setError(message);
+      }
     } finally {
       setLoading(false);
     }
@@ -87,6 +119,12 @@ export function SessionApproval() {
         This dApp wants to connect to your Solana address. Verify the domain
         before approving.
       </p>
+
+      {timeLeft !== null && (
+        <p className={`mt-2 text-xs font-semibold ${timeLeft < 60 ? 'text-ember' : 'text-amber-600'}`}>
+          Expires in {Math.floor(timeLeft / 60)}:{(timeLeft % 60).toString().padStart(2, '0')}
+        </p>
+      )}
 
       <div className="mt-4 flex gap-3">
         <Button variant="ghost" onClick={handleReject} disabled={loading}>
