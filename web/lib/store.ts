@@ -84,6 +84,7 @@ interface AppState {
   solanaAccounts: SolanaAccount[];
   activeAccountIndex: number;
   wcInitialized: boolean;
+  appReady: boolean;
   activeSessions: WCSession[];
   pendingProposal: PendingProposal | null;
   pendingRequest: PendingRequest | null;
@@ -103,6 +104,7 @@ interface AppState {
   setSolanaAccounts: (accounts: SolanaAccount[]) => void;
   setActiveAccount: (index: number) => void;
   setWcInitialized: (initialized: boolean) => void;
+  setAppReady: (ready: boolean) => void;
   addActiveSession: (session: WCSession) => void;
   removeActiveSession: (topic: string) => void;
   getSessionsForAddress: (address: string) => WCSession[];
@@ -144,6 +146,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   solanaAccounts: [],
   activeAccountIndex: 0,
   wcInitialized: false,
+  appReady: false,
   activeSessions: [],
   pendingProposal: null,
   pendingRequest: null,
@@ -187,6 +190,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
   },
   setWcInitialized: (initialized) => set({ wcInitialized: initialized }),
+  setAppReady: (ready) => set({ appReady: ready }),
   addActiveSession: (session) =>
     set((state) => ({
       activeSessions: [

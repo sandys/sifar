@@ -14,6 +14,7 @@ import { getStateFromHash, clearStateFromHash } from '@/lib/urlState';
 
 export function AppProviders({ children }: { children: React.ReactNode }) {
   const setWcInitialized = useAppStore((state) => state.setWcInitialized);
+  const setAppReady = useAppStore((state) => state.setAppReady);
   const setPendingProposal = useAppStore((state) => state.setPendingProposal);
   const removeActiveSession = useAppStore((state) => state.removeActiveSession);
   const setTrezorUiRequest = useAppStore((state) => state.setTrezorUiRequest);
@@ -91,9 +92,13 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       if (envProjectId) {
         setWcProjectId(envProjectId);
         setWalletConnectProjectId(envProjectId);
+      } else {
+        // No project ID available, app is ready immediately
+        // User will need to enter project ID manually
+        setAppReady(true);
       }
     }
-  }, [setWcProjectId, setSolanaAccounts, refreshSolanaAccountBalance]);
+  }, [setWcProjectId, setSolanaAccounts, refreshSolanaAccountBalance, setAppReady]);
 
   useLayoutEffect(() => {
     if (typeof window === 'undefined') return;
@@ -169,14 +174,24 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
     if (initialized.current) return;
     initialized.current = true;
 
+    // Timeout to prevent infinite loading spinner
+    const timeout = setTimeout(() => {
+      if (!useAppStore.getState().appReady) {
+        console.warn('[Sifar] Init timeout - forcing app ready');
+        setAppReady(true);
+      }
+    }, 5000);
+
     async function init() {
       try {
         if (!hasWalletConnectProjectId()) {
           console.warn('[WC] Skipping init: WalletConnect Project ID missing');
+          setAppReady(true);
           return;
         }
         const wallet = await initWalletConnect();
         setWcInitialized(true);
+        setAppReady(true);
 
         // Sync existing sessions from WC IndexedDB to our store
         const existingSessions = wallet.getActiveSessions();
@@ -361,11 +376,15 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
           details: `WalletConnect init failed: ${error?.message || 'Unknown error'}`,
           rawParams: JSON.stringify({ error: error?.message, stack: error?.stack }, null, 2)
         });
+        // Still mark app as ready so user can interact (maybe fix project ID)
+        setAppReady(true);
       }
     }
 
     init();
-  }, [removeActiveSession, setPendingProposal, setWcInitialized]);
+
+    return () => clearTimeout(timeout);
+  }, [removeActiveSession, setPendingProposal, setWcInitialized, setAppReady]);
 
   useEffect(() => {
     const handler = (event: { type: string; payload?: any }) => {
