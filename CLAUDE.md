@@ -1,141 +1,225 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Instructions for Claude Code when working in this repository.
 
 ## Project Overview
 
-This is a React Native mobile application that acts as a WalletConnect v2-compliant bridge between Jupiter DEX and hardware wallets (Trezor/Ledger). The app enables secure transaction signing on hardware wallets while interacting with DeFi protocols on mobile browsers.
+Sifar is a stateless Next.js web app that bridges Trezor hardware wallets to Solana dApps via WalletConnect v2. It uses direct WebUSB for device communication (no popup/iframe).
 
-**Security Model**: The app is designed to be "provably dumb" - it cannot access private keys, modify transactions, or act maliciously. All security-critical operations are offloaded to hardware wallets.
+**Security Model**: The app is "provably dumb" — cannot access private keys, cannot modify transactions. All signing requires physical device confirmation.
 
-## Development Commands
+## Development (Docker Only)
 
-All commands should be run from the `mobile/` directory:
+All commands MUST run through docker compose. Never run npm/node directly on the host.
 
 ```bash
-# Install dependencies
-npm ci
+# Start dev server
+docker compose up -d
 
-# iOS setup (first run only)
-cd ios && bundle install && bundle exec pod install && cd ..
+# Run lint tests (ALWAYS run before builds)
+docker compose exec web node tests/lint-tests.js
 
-# Development
-npm start                    # Start Metro bundler
-npm run android             # Run on Android
-npm run ios                 # Run on iOS
+# TypeScript check
+docker compose exec web npx tsc --noEmit
 
-# Code Quality
-npm run lint                # ESLint
-npm test                    # Jest tests
-npm run gen:trezor-descriptor  # Generate Trezor protobuf descriptor
+# Build (run after lint passes, then restart dev server)
+docker compose exec web npx next build
+docker compose restart web
 
-# Production builds
-cd android && ./gradlew assembleRelease  # Android release build
+# Full test suite
+docker compose exec web npm test
+
+# Interactive shell
+docker compose exec web sh
+
+# View logs
+docker compose logs -f web
+
+# Restart / Stop
+docker compose restart web
+docker compose down
 ```
 
-## Architecture
+**Workflow**: `lint-tests.js` → `tsc --noEmit` → `next build` → `npm test`
 
-The codebase follows the structure outlined in `spec.md` section 9.1:
+## Code Structure
 
-### Key Services
-- **Hardware Bridges** (`src/services/hardware/`):
-  - `TrezorBridge.ts` - USB-C connection for Android only
-  - `LedgerBridge.ts` - Bluetooth connection for iOS/Android
-  - Both implement secure signing with passphrase support
-
-- **RPC Service** (`src/services/rpc/`):
-  - `SolanaRPCService.ts` - Handles read-only blockchain queries
-  - `rpcConfig.ts` - RPC endpoint rotation logic
-
-- **Protocol Integration**:
-  - Trezor uses custom protobuf implementation in `src/services/hardware/trezor/`
-  - Ledger uses `@ledgerhq` libraries with Bluetooth transport
-
-### Project Structure
 ```
-mobile/src/
-├── services/hardware/     # Hardware wallet integrations
-├── services/rpc/         # Solana blockchain queries  
-├── config/               # RPC endpoints configuration
-└── native/               # Native USB module for Trezor
+web/
+├── app/                        # Next.js app router
+│   ├── api/solana/route.ts    # RPC proxy with fallbacks
+│   ├── providers.tsx          # WC + Trezor wiring + URL state restore
+│   └── trezor-usb/            # Main WebUSB page
+├── components/
+│   ├── WalletConnectModal.tsx # Sessions + signing UI
+│   ├── WalletDisplay.tsx      # Account list + balance display
+│   └── TrezorPrompt.tsx       # PIN/passphrase/button prompts
+├── lib/
+│   ├── trezorConnect.ts       # WebUSB Trezor client
+│   ├── walletconnect.ts       # WC v2 wallet setup
+│   ├── signing.ts             # WC request → Trezor → response
+│   ├── store.ts               # Zustand state (in-memory only)
+│   └── urlState.ts            # URL hash state persistence
+└── tests/
+    └── lint-tests.js          # Custom project lints (READ THIS)
 ```
 
-## Testing
+## Code Rules (Enforced by lint-tests.js)
 
-- Uses Jest with React Native preset
-- Test files: `**/__tests__/*.test.ts` or `*.test.ts` alongside source
-- Hardware wallet interactions are mocked in tests
-- Run `npm test` for full test suite
+These rules are automatically enforced. Violations fail the build.
+
+### Zustand Store
+
+```typescript
+// BAD - causes render loops
+useAppStore()
+
+// GOOD - use selector
+useAppStore((state) => state.someField)
+```
+
+### Client Components (Hydration)
+
+Files with `'use client'` that use `window` or `navigator` MUST have guards:
+
+```typescript
+// Options: typeof check, useEffect, or useLayoutEffect
+if (typeof window !== 'undefined') { ... }
+// or wrap in useEffect
+useEffect(() => { window.something }, [])
+```
+
+### Forbidden Imports
+
+```typescript
+// NEVER use - we use direct WebUSB, not hosted popup
+import '@trezor/connect-web'  // ❌
+'connect.trezor.io'           // ❌
+```
+
+### Solana RPC
+
+```typescript
+// BAD - bypasses proxy
+new Connection(DEFAULT_SOLANA_RPC)
+
+// GOOD - use proxy route
+new Connection('/api/solana')
+```
+
+### Signing Account Mismatch (CRITICAL)
+
+Never use `store.solanaDerivationPath` directly for signing. Extract signer from transaction:
+
+```typescript
+// BAD - may sign with wrong account
+const path = store.solanaDerivationPath;
+signSolanaTransaction(path, ...);
+
+// GOOD - derive from transaction signer
+const signerAddress = tx.message.staticAccountKeys[0].toBase58();
+const matchingAccount = store.solanaAccounts.find(a => a.address === signerAddress);
+signSolanaTransaction(matchingAccount.path, ...);
+```
+
+### Trezor Signature Format
+
+`@trezor/protobuf` returns signatures as hex strings. Never double-encode:
+
+```typescript
+// BAD - double encoding (produces 256 chars instead of 128)
+Buffer.from(response.message.signature).toString('hex')
+
+// GOOD - use directly (already hex string, 128 chars = 64 bytes)
+const signatureHex = response.message.signature;
+```
+
+### Required Patterns
+
+| File | Must contain |
+|------|-------------|
+| `providers.tsx` | `__sifarConsolePatched` (console capture) |
+| `lib/constants.ts` | `'/api/solana'` (default RPC) |
+| `lib/trezorConnect.ts` | `ui-error`, `hadError`, `retriedAfterFeatures`, `signatureHex` |
+| `components/TrezorPrompt.tsx` | `ui-error` |
+| `lib/walletconnect.ts` | `buildApprovedNamespaces` |
+| `lib/signing.ts` | `normalizeSignature`, `staticAccountKeys[0]`, `solanaAccounts.find` |
+| `components/WalletConnectModal.tsx` | `solana_signMessage`, `Trezor Hardware Limitation` or `Not Supported` |
+| `lib/store.ts` | `NEXT_PUBLIC_WC_PROJECT_ID`, `activeSessions:` |
+
+### Forbidden Patterns
+
+| File | Must NOT contain |
+|------|------------------|
+| `trezor-usb-client.tsx` | `Promise.all` with `getAllBalances` (causes 429s) |
+| Pages | `TransactionPreview`, `SigningFlow` (signing is in modal) |
+| `lib/signing.ts` | `sigBytes.length === 128` with `.slice()` |
+
+### UI/UX Rules
+
+- **No ghost buttons** for important actions (Disconnect should be visible)
+- **No standalone headers** in pages — merge branding into functional components
+- **Error displays** must have dismiss/retry actions
+- **Filter UI** must show all options explicitly ("All | Connected", not just badge)
+- **No redundant displays** (don't show address separately if accounts are listed)
+
+### Branding
+
+- Console logs: Use `[Sifar]` prefix, not `[Trezor]`
+- No Arabic script characters — use Arabic-style fonts for Latin text only
 
 ## Security Requirements
 
-**Critical**: This is a security-focused application. Always:
 1. Never store private keys or seed phrases
 2. Never modify transactions (pass-through only)
-3. Validate chain before hardware signing to prevent cross-chain attacks
-4. Show verification links before signing
+3. Extract signer from transaction, don't trust UI state
+4. Verify signatures locally before sending
 5. Fail closed when uncertain
 
-See `spec.md` sections 5-7 for detailed security requirements and attack vector prevention.
+## File Dependencies
 
-## Platform Support
+```
+docker-compose.yml → runs web/scripts/dev.sh
+web/scripts/dev.sh → runs npm ci if needed
+web/next.config.js → CSP must allow verify.walletconnect.org, pulse.walletconnect.org
+web/types/jsqr.d.ts → type shim required
+```
 
-- **Android**: Supports both Trezor (USB-C) and Ledger (Bluetooth)
-- **iOS**: Ledger only via Bluetooth (no USB support)
-- **Minimum**: iOS 13+, Android 8.0+ (API 26+)
+## Key Libraries
 
-## Dependencies
-
-Key libraries:
-- `@trezor/*` packages for Trezor integration
-- `@ledgerhq/*` packages for Ledger integration  
-- `@solana/web3.js` for Solana blockchain interaction
-- `bs58` for address encoding
-- `protobufjs` for Trezor protocol
-
-## Current Implementation Status
-
-The codebase currently implements:
-- Trezor USB bridge with passphrase support
-- Ledger Bluetooth bridge  
-- Solana RPC service for blockchain queries
-- Basic test infrastructure
-
-Still needed for full WalletConnect implementation:
-- WalletConnect v2 provider service
-- Transaction verification screens
-- Session management
-- Chain validation
+- `@trezor/transport`, `@trezor/protobuf` — Direct WebUSB, no popup
+- `@walletconnect/web3wallet` — WC v2 wallet
+- `@solana/web3.js` — Transaction handling
+- `zustand` — In-memory state only
+- `jsqr` — QR code decoding from pasted images
 
 ## CLI Efficiency Guidelines
 
 **Core Principle**: One CLI command > Multiple tool calls
 
-**Essential Commands**:
+### Essential Commands
 
-1. **Pattern Search**:
-   - `rg -n "pattern" --glob '!node_modules/*'` instead of multiple Grep calls
-2. **File Finding**:
-   - `fd filename` or `fd .ext directory` instead of Glob tool
-3. **File Preview**:
-   - `bat -n filepath` for syntax-highlighted preview with line numbers
-4. **Bulk Refactoring**:
-   - `rg -l "pattern" | xargs sed -i 's/old/new/g'` for mass replacements
-5. **Project Structure**:
-   - `tree -L 2 directories` for quick overview
-6. **JSON Inspection**:
-   - `jq '.key' file.json` for quick JSON parsing
+1. **Pattern Search**: `rg -n "pattern" --glob '!node_modules/*'` instead of multiple Grep calls
+2. **File Finding**: `fd filename` or `fd .ext directory` instead of Glob tool
+3. **File Preview**: `bat -n filepath` for syntax-highlighted preview with line numbers
+4. **Bulk Refactoring**: `rg -l "pattern" | xargs sed -i 's/old/new/g'` for mass replacements
+5. **Project Structure**: `tree -L 2 directories` for quick overview
+6. **JSON Inspection**: `jq '.key' file.json` for quick JSON parsing
 
-**The Game-Changing Pattern**:
+### The Game-Changing Pattern
+
 ```bash
 # Find files → Pipe to xargs → Apply sed transformation
 rg -l "find_this" | xargs sed -i 's/replace_this/with_this/g'
 ```
+
 This single pattern can replace dozens of Edit tool calls!
 
-**Mental Note**: Before reaching for Read/Edit/Glob tools, ask:
+### Mental Note
+
+Before reaching for Read/Edit/Glob tools, ask:
 - Can `rg` find this pattern faster?
-- Can `fd` locate these files quicker?  
+- Can `fd` locate these files quicker?
 - Can `sed` fix all instances at once?
 - Can `jq` extract this JSON data directly?
 

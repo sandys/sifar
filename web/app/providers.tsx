@@ -10,6 +10,7 @@ import {
 } from '@/lib/walletconnect';
 import { handleSessionRequest } from '@/lib/signing';
 import { useAppStore } from '@/lib/store';
+import { getStateFromHash, clearStateFromHash } from '@/lib/urlState';
 
 export function AppProviders({ children }: { children: React.ReactNode }) {
   const setWcInitialized = useAppStore((state) => state.setWcInitialized);
@@ -17,15 +18,72 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
   const removeActiveSession = useAppStore((state) => state.removeActiveSession);
   const setTrezorUiRequest = useAppStore((state) => state.setTrezorUiRequest);
   const setWcProjectId = useAppStore((state) => state.setWcProjectId);
+  const setSolanaAccounts = useAppStore((state) => state.setSolanaAccounts);
+  const refreshSolanaAccountBalance = useAppStore(
+    (state) => state.refreshSolanaAccountBalance
+  );
   const initialized = useRef(false);
+  const urlStateRestored = useRef(false);
 
+  // Restore state from URL hash on mount (runs before WC init)
   useEffect(() => {
-    const envProjectId = process.env.NEXT_PUBLIC_WC_PROJECT_ID;
-    if (envProjectId) {
-      setWcProjectId(envProjectId);
-      setWalletConnectProjectId(envProjectId);
+    if (urlStateRestored.current) return;
+    urlStateRestored.current = true;
+
+    // Debug: log what we're seeing
+    console.log('[URL State] Hash on mount:', typeof window !== 'undefined' ? window.location.hash : 'SSR');
+
+    const restored = getStateFromHash();
+    console.log('[URL State] Restored:', restored ? `${restored.accounts.length} accounts` : 'null');
+
+    if (restored) {
+      console.log('[URL State] Restoring from URL:', {
+        accounts: restored.accounts.length,
+        activeIndex: restored.activeAccountIndex,
+        sessions: restored.sessionHints.length
+      });
+
+      // Restore project ID
+      setWcProjectId(restored.wcProjectId);
+      setWalletConnectProjectId(restored.wcProjectId);
+
+      // Restore accounts with loading state
+      const accounts = restored.accounts.map((acc) => ({
+        address: acc.address,
+        path: acc.path,
+        balance: null,
+        tokens: [],
+        balanceStatus: 'loading' as const,
+        balanceError: null
+      }));
+      setSolanaAccounts(accounts);
+
+      // Store the activeAccountIndex for WalletDisplay to use
+      // We store it in sessionStorage so WalletDisplay can read it on mount
+      sessionStorage.setItem(
+        'urlState_activeAccountIndex',
+        String(restored.activeAccountIndex)
+      );
+
+      // Trigger balance fetches for all restored accounts
+      restored.accounts.forEach((_, index) => {
+        refreshSolanaAccountBalance(index).catch((err) => {
+          console.warn('[URL State] Balance fetch failed for account', index, err);
+        });
+      });
+
+      // Clear the hash after restoring to avoid re-restoration on refresh
+      // (user can generate new URL when needed)
+      clearStateFromHash();
+    } else {
+      // No URL state, use env project ID if available
+      const envProjectId = process.env.NEXT_PUBLIC_WC_PROJECT_ID;
+      if (envProjectId) {
+        setWcProjectId(envProjectId);
+        setWalletConnectProjectId(envProjectId);
+      }
     }
-  }, [setWcProjectId]);
+  }, [setWcProjectId, setSolanaAccounts, refreshSolanaAccountBalance]);
 
   useLayoutEffect(() => {
     if (typeof window === 'undefined') return;
@@ -56,13 +114,17 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       (window as any).__sifarLogBuffer || []);
 
     levels.forEach((level) => {
-      const original = console[level].bind(console);
+      const original = (console[level] as (...args: any[]) => void).bind(console);
       originals.set(level, original);
-      console[level] = (...args: any[]) => {
+      (console as any)[level] = (...args: any[]) => {
         original(...args);
-        const line = `[${stamp()}] ${level.toUpperCase()} ${args
-          .map(format)
-          .join(' ')}`;
+        // Filter out WalletConnect internal cleanup noise
+        const formatted = args.map(format).join(' ');
+        if (formatted.includes('Record was recently deleted') ||
+            formatted.includes('Missing or invalid')) {
+          return; // Skip WC internal cleanup messages
+        }
+        const line = `[${stamp()}] ${level.toUpperCase()} ${formatted}`;
         buffer.push(line);
         append(line);
       };
@@ -85,7 +147,7 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       levels.forEach((level) => {
         const original = originals.get(level);
         if (original) {
-          console[level] = original;
+          (console as any)[level] = original;
         }
       });
       window.removeEventListener('error', onError);

@@ -1,8 +1,9 @@
 'use client';
 
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { useAppStore } from '@/lib/store';
 import { WalletConnectModal } from '@/components/WalletConnectModal';
+import { useUrlState } from '@/lib/hooks/useUrlState';
 
 export function WalletDisplay() {
   const solanaAccounts = useAppStore((state) => state.solanaAccounts);
@@ -23,6 +24,8 @@ export function WalletDisplay() {
   const [wcModalIndex, setWcModalIndex] = useState<number | null>(null);
   const [filterConnected, setFilterConnected] = useState(false);
   const pageSize = 5;
+  const urlStateChecked = useRef(false);
+  const { generateShareableUrl } = useUrlState();
 
   // Count sessions per address
   const sessionCountByAddress = useMemo(() => {
@@ -73,6 +76,32 @@ export function WalletDisplay() {
       setWcModalIndex(null);
     }
   }, [solanaAccounts, wcModalIndex]);
+
+  // Check for URL state and auto-open modal on mount
+  useEffect(() => {
+    if (urlStateChecked.current) return;
+    if (solanaAccounts.length === 0) return;
+    urlStateChecked.current = true;
+
+    const storedIndex = sessionStorage.getItem('urlState_activeAccountIndex');
+    if (storedIndex !== null) {
+      const index = parseInt(storedIndex, 10);
+      if (!isNaN(index) && index >= 0 && index < solanaAccounts.length) {
+        console.log('[WalletDisplay] Auto-opening modal from URL state, index:', index);
+        setActiveAccount(index);
+        setWcModalIndex(index);
+      }
+      // Clear after use
+      sessionStorage.removeItem('urlState_activeAccountIndex');
+    }
+  }, [solanaAccounts, setActiveAccount]);
+
+  // Update URL hash when modal opens (captures current state for bookmarking)
+  useEffect(() => {
+    if (wcModalIndex !== null && solanaAccounts.length > 0) {
+      generateShareableUrl(wcModalIndex);
+    }
+  }, [wcModalIndex, solanaAccounts.length, generateShareableUrl]);
 
   // Auto-open modal when there's a pending signing request
   useEffect(() => {

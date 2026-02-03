@@ -1,79 +1,110 @@
-# Vault Bridge V1 — WebUSB Trezor Wallet Bridge
+# Sifar — Hardware Wallet Bridge for Solana
 
-This repo contains a Next.js web app that talks to a Trezor over **direct WebUSB** (no popup/iframe), scans WalletConnect QR codes, and signs Solana transactions on hardware. It is **stateless** by design: no localStorage, no cookies, no persistence.
+A stateless Next.js web app that connects Trezor hardware wallets to Solana dApps via WalletConnect v2. Uses direct WebUSB (no popup/iframe) for secure transaction signing.
 
-## Quick start (Docker dev)
+## Quick Start (Docker)
 
 ```bash
 docker compose up -d
 ```
 
-Open:
-```
-http://localhost:3001/trezor-usb
-```
+Open http://localhost:3001
 
-Logs:
-```
+View logs:
+```bash
 docker compose logs -f web
 ```
 
-## WebUSB flow (manual)
+## Development Commands
 
-1. Connect Trezor via USB.
-2. Unlock device.
-3. Click **Connect + List**.
-4. Approve WebUSB prompt.
-5. Confirm prompts on device.
-6. Accounts + balances appear.
+All commands run through docker compose:
 
-## Code structure (web/)
+```bash
+# Start dev server
+docker compose up -d
+
+# Lint tests (custom project-specific lints)
+docker compose exec web node tests/lint-tests.js
+
+# TypeScript check
+docker compose exec web npx tsc --noEmit
+
+# Build (requires restart after, conflicts with dev server)
+docker compose exec web npx next build
+docker compose restart web
+
+# Full test suite (lint + playwright)
+docker compose exec web npm test
+
+# Interactive shell
+docker compose exec web sh
+
+# View logs
+docker compose logs -f web
+
+# Restart
+docker compose restart web
+
+# Stop
+docker compose down
+```
+
+## Architecture
 
 ```
 web/
 ├── app/
-│   ├── api/solana/route.ts      # Server-side RPC proxy + fallback
-│   ├── layout.tsx               # Root layout
-│   ├── page.tsx                 # Main WC flow page
-│   ├── providers.tsx            # WC + Trezor UI event wiring
-│   ├── trezor-usb/              # Direct WebUSB page
-│   └── trezor-test/             # Test harness page
+│   ├── api/solana/route.ts    # RPC proxy with fallbacks
+│   ├── layout.tsx             # Root layout
+│   ├── page.tsx               # Main WalletConnect page
+│   ├── providers.tsx          # WC + Trezor event wiring + URL state restore
+│   ├── trezor-usb/            # Direct WebUSB page
+│   └── trezor-test/           # Test harness
 ├── components/
-│   ├── TrezorPrompt.tsx         # PIN/passphrase/button prompts
-│   ├── WalletDisplay.tsx        # Accounts + balances + pagination
-│   ├── DebugPanel.tsx           # CLI-style console capture + copy
-│   ├── Scanner.tsx              # QR scanner
-│   └── ui/                      # UI primitives
+│   ├── WalletConnectModal.tsx # Session + signing UI
+│   ├── WalletDisplay.tsx      # Account list + pagination
+│   ├── TrezorPrompt.tsx       # PIN/passphrase prompts
+│   ├── DebugPanel.tsx         # Console capture
+│   └── ui/                    # Primitives
 ├── lib/
-│   ├── trezorConnect.ts         # Connect-like client over WebUSB
-│   ├── trezor.ts                # Trezor helpers (Solana)
-│   ├── solana.ts                # Balance/token fetch w/ proxy
-│   ├── signing.ts               # WC request -> Trezor sign -> response
-│   ├── walletconnect.ts         # WC v2 wallet wiring
-│   └── store.ts                 # Zustand in-memory state
-└── tests/                        # E2E and fixtures
+│   ├── trezorConnect.ts       # WebUSB Trezor client
+│   ├── walletconnect.ts       # WC v2 wallet
+│   ├── signing.ts             # Request → Trezor → Response
+│   ├── solana.ts              # Balance/token queries
+│   ├── store.ts               # Zustand state
+│   ├── urlState.ts            # URL hash persistence
+│   └── hooks/useUrlState.ts   # URL state hook
+└── tests/
+    ├── lint-tests.js          # Custom lint rules
+    └── trezor-e2e.spec.ts     # Playwright tests
 ```
 
-## Solana RPC proxy
+## Key Features
 
-The browser uses `/api/solana` (same-origin). The server-side proxy forwards JSON-RPC to:
+- **Direct WebUSB**: No Trezor popup/iframe, direct device communication
+- **WalletConnect v2**: Connect any WC-compatible dApp
+- **URL State Persistence**: Bookmark URLs restore accounts + modal state
+- **Stateless**: No localStorage/cookies, session data in URL hash only
+- **Multi-account**: Scan and manage multiple HD accounts
 
-- `https://api.mainnet.solana.com`
-- `https://api.mainnet-beta.solana.com`
+## Environment Variables
 
-Set your own:
-
+```bash
+NEXT_PUBLIC_WC_PROJECT_ID    # WalletConnect Cloud project ID
+SOLANA_RPC                   # Primary RPC endpoint
+SOLANA_RPC_FALLBACKS         # Comma-separated fallback RPCs
 ```
-SOLANA_RPC=https://your-rpc
-SOLANA_RPC_FALLBACKS=https://fallback-1,https://fallback-2
-```
 
-## Trezor account scanning
+## Browser Requirements
 
-Accounts are scanned in batches and paginated in the UI. The scanner stops after a gap of empty accounts (standard wallet gap-limit behavior) or a safety maximum to prevent infinite scanning.
+- Chrome/Edge (WebUSB support required)
+- Trezor must be unlocked before connecting
+- HTTPS required for WebUSB (dev server uses self-signed cert)
 
-## Notes
+## Security Model
 
-- **Chrome required** for WebUSB.
-- **Device must be unlocked** before connecting.
-- WalletConnect is optional for `/trezor-usb`; it is skipped unless `NEXT_PUBLIC_WC_PROJECT_ID` is set.
+The app is "provably dumb":
+- Cannot access private keys (hardware-only)
+- Cannot modify transactions (pass-through signing)
+- All signing requires physical device confirmation
+- Transaction signer derived from TX, not UI state (prevents account mismatch)

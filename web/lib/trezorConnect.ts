@@ -141,7 +141,7 @@ class TrezorConnectLike {
     this.transport = new transportModule.WebUsbTransport({
       messages,
       id: 'vault-bridge'
-    });
+    }) as unknown as WebUsbTransport;
 
     const initResult = await this.transport.init();
     if (!initResult.success) {

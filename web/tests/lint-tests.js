@@ -2,7 +2,10 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
-const REPO_ROOT = path.join(ROOT, '..');
+// Detect if running in Docker (volume mounted at /app)
+const IS_DOCKER = ROOT === '/app' || process.env.DOCKER === '1';
+// In Docker, repo root files are not accessible; use ROOT for web-relative paths
+const REPO_ROOT = IS_DOCKER ? null : path.join(ROOT, '..');
 const IGNORE_DIRS = new Set([
   'node_modules',
   '.next',
@@ -104,24 +107,42 @@ function runChecks(file, content) {
 walk(ROOT);
 
 function fileExists(relPath) {
+  // In Docker, resolve web/ paths to ROOT, skip repo-level paths
+  if (IS_DOCKER) {
+    if (relPath.startsWith('web/')) {
+      return fs.existsSync(path.join(ROOT, relPath.slice(4)));
+    }
+    // Repo-level files not accessible in Docker
+    return false;
+  }
   return fs.existsSync(path.join(REPO_ROOT, relPath));
 }
 
 function readRepoFile(relPath) {
+  // In Docker, resolve web/ paths to ROOT
+  if (IS_DOCKER) {
+    if (relPath.startsWith('web/')) {
+      return fs.readFileSync(path.join(ROOT, relPath.slice(4)), 'utf8');
+    }
+    throw new Error(`Cannot read repo-level file in Docker: ${relPath}`);
+  }
   return fs.readFileSync(path.join(REPO_ROOT, relPath), 'utf8');
 }
 
 // Ensure Docker dev flow reinstalls deps when new packages are added.
-try {
-  const dockerCompose = readRepoFile('docker-compose.yml');
-  if (!dockerCompose.includes('./scripts/dev.sh')) {
-    addError(
-      'docker-compose.yml',
-      'Dev container must run ./scripts/dev.sh to auto-install new deps.'
-    );
+// Skip repo-level checks in Docker (docker-compose.yml not accessible)
+if (!IS_DOCKER) {
+  try {
+    const dockerCompose = readRepoFile('docker-compose.yml');
+    if (!dockerCompose.includes('./scripts/dev.sh')) {
+      addError(
+        'docker-compose.yml',
+        'Dev container must run ./scripts/dev.sh to auto-install new deps.'
+      );
+    }
+  } catch (error) {
+    addError('docker-compose.yml', 'Missing docker-compose.yml for dev check.');
   }
-} catch (error) {
-  addError('docker-compose.yml', 'Missing docker-compose.yml for dev check.');
 }
 
 if (!fileExists('web/scripts/dev.sh')) {

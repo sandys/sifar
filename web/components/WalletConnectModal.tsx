@@ -20,6 +20,7 @@ import {
 } from '@/lib/signing';
 import { useAppStore } from '@/lib/store';
 import { setWalletConnectProjectId } from '@/lib/walletconnect';
+import { useUrlState } from '@/lib/hooks/useUrlState';
 
 interface WalletConnectModalProps {
   open: boolean;
@@ -68,7 +69,9 @@ export function WalletConnectModal({
   const [eventLogOpen, setEventLogOpen] = useState(false);
   const [expandedEvents, setExpandedEvents] = useState<Set<string>>(() => new Set());
   const [addressCopied, setAddressCopied] = useState(false);
+  const [urlCopied, setUrlCopied] = useState(false);
   const eventLogRef = useRef<HTMLDivElement>(null);
+  const { copyShareableUrl } = useUrlState();
 
   const toggleEventExpanded = (eventId: string) => {
     setExpandedEvents((prev) => {
@@ -361,6 +364,19 @@ export function WalletConnectModal({
     setTimeout(() => setAddressCopied(false), 1500);
   };
 
+  const handleCopyShareUrl = async () => {
+    const accountIndex = account
+      ? useAppStore.getState().solanaAccounts.findIndex(
+          (a) => a.address === account.address
+        )
+      : undefined;
+    const success = await copyShareableUrl(accountIndex);
+    if (success) {
+      setUrlCopied(true);
+      setTimeout(() => setUrlCopied(false), 1500);
+    }
+  };
+
   if (!open) return null;
 
   return (
@@ -384,6 +400,18 @@ export function WalletConnectModal({
                     }`}
                   >
                     {addressCopied ? 'Copied' : 'Copy'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCopyShareUrl}
+                    className={`shrink-0 rounded-md border px-2 py-0.5 text-[10px] uppercase tracking-wide transition ${
+                      urlCopied
+                        ? 'border-blue-300 bg-blue-100 text-blue-700'
+                        : 'border-amber-200 text-steel hover:bg-amber-50'
+                    }`}
+                    title="Copy URL to restore this session state"
+                  >
+                    {urlCopied ? 'URL Copied' : 'Share URL'}
                   </button>
                 </div>
                 <div className="mt-2 flex items-center gap-2">
