@@ -701,6 +701,57 @@ function runIntrospectionLints(file, content) {
   checkFilterUIClarity(file, content);
 }
 
+// ============================================
+// Session Key Delegation Safeguards
+// ============================================
+// Session keys allow temporary message signing without Trezor.
+// MUST have expiration and revocation to limit risk.
+
+// Ensure session key has expiration
+try {
+  const sessionKeyFile = readRepoFile('web/lib/sessionKey.ts');
+  if (!sessionKeyFile.includes('expiresAt')) {
+    addError(
+      'web/lib/sessionKey.ts',
+      'Session keys must have expiration time (expiresAt).'
+    );
+  }
+  if (!sessionKeyFile.includes('isSessionKeyValid')) {
+    addError(
+      'web/lib/sessionKey.ts',
+      'Must validate session key expiration before use (isSessionKeyValid).'
+    );
+  }
+} catch (error) {
+  // File may not exist yet
+}
+
+// Ensure session key UI allows revocation
+try {
+  const sessionKeyStatusFile = readRepoFile('web/components/SessionKeyStatus.tsx');
+  if (!sessionKeyStatusFile.includes('clearSessionKey')) {
+    addError(
+      'web/components/SessionKeyStatus.tsx',
+      'Session key UI must allow revocation (clearSessionKey).'
+    );
+  }
+} catch (error) {
+  // File may not exist yet
+}
+
+// Ensure session key setup modal warns about limitations
+try {
+  const sessionKeySetupFile = readRepoFile('web/components/SessionKeySetupModal.tsx');
+  if (!sessionKeySetupFile.includes('pump.fun') && !sessionKeySetupFile.includes('will reject')) {
+    addError(
+      'web/components/SessionKeySetupModal.tsx',
+      'Session key setup must warn that most dApps will reject delegated signatures.'
+    );
+  }
+} catch (error) {
+  // File may not exist yet
+}
+
 // Re-walk to run introspection lints
 function walkForIntrospection(dir) {
   const entries = fs.readdirSync(dir, { withFileTypes: true });

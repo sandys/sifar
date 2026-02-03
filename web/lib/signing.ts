@@ -418,3 +418,29 @@ export async function approveMessageRequest() {
     'This is a hardware limitation. Only transaction signing is supported.'
   );
 }
+
+/**
+ * Respond to a message signing request using a session key.
+ * The signature comes from the session key (not Trezor), along with the attestation proof.
+ */
+export async function respondToSessionKeyMessage(
+  topic: string,
+  requestId: number,
+  signature: string,
+  sessionKey?: string,
+  attestationTx?: string
+): Promise<void> {
+  const store = useAppStore.getState();
+
+  // Build response with signature and optional proof
+  const response: any = { signature };
+  if (sessionKey) {
+    response.sessionKey = sessionKey;
+  }
+  if (attestationTx) {
+    response.attestation = attestationTx;
+  }
+
+  await respondToSessionRequest(topic, requestId, response);
+  store.clearPendingRequest();
+}

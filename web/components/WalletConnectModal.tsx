@@ -16,8 +16,16 @@ import {
   approveBatchRequest,
   approveAndSendRequest,
   approveMessageRequest,
-  rejectCurrentRequest
+  rejectCurrentRequest,
+  respondToSessionKeyMessage
 } from '@/lib/signing';
+import { SessionKeySetupModal } from './SessionKeySetupModal';
+import { SessionKeyStatus } from './SessionKeyStatus';
+import {
+  loadSessionKey,
+  isSessionKeyValid,
+  signWithSessionKey
+} from '@/lib/sessionKey';
 import { useAppStore } from '@/lib/store';
 import { setWalletConnectProjectId } from '@/lib/walletconnect';
 import { useUrlState } from '@/lib/hooks/useUrlState';
@@ -70,6 +78,7 @@ export function WalletConnectModal({
   const [expandedEvents, setExpandedEvents] = useState<Set<string>>(() => new Set());
   const [addressCopied, setAddressCopied] = useState(false);
   const [urlCopied, setUrlCopied] = useState(false);
+  const [showSessionKeyModal, setShowSessionKeyModal] = useState(false);
   const eventLogRef = useRef<HTMLDivElement>(null);
   const { copyShareableUrl } = useUrlState();
 
@@ -546,8 +555,50 @@ export function WalletConnectModal({
                     trezor-firmware #4371
                   </a>
                 </p>
+                <p className="mt-3 border-t border-orange-200 pt-2">
+                  <span className="font-semibold">Experimental:</span> Use a delegated session key.
+                </p>
+                <p className="mt-1">
+                  Most dApps (pump.fun) will reject this - the signature comes from a different address.
+                </p>
               </div>
-              <div className="mt-3">
+              {account && (
+                <div className="mt-3">
+                  <SessionKeyStatus authority={account.address} compact />
+                </div>
+              )}
+              <div className="mt-3 flex gap-2">
+                <button
+                  type="button"
+                  className="rounded-lg border border-blue-300 bg-blue-100 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-blue-700 hover:bg-blue-200"
+                  onClick={() => {
+                    // Check if we already have a valid session key
+                    if (account) {
+                      const existingKey = loadSessionKey(account.address);
+                      if (existingKey && isSessionKeyValid(existingKey) && signingRequestForWallet.messageBytes) {
+                        // Sign immediately with existing session key
+                        const { signature, proof } = signWithSessionKey(existingKey, signingRequestForWallet.messageBytes);
+                        respondToSessionKeyMessage(
+                          signingRequestForWallet.topic,
+                          signingRequestForWallet.requestId,
+                          signature,
+                          proof.sessionKey,
+                          proof.attestationTx
+                        ).then(() => {
+                          setStatus('Message signed with session key.');
+                        }).catch((err) => {
+                          setError(err?.message || 'Failed to sign with session key');
+                        });
+                        return;
+                      }
+                    }
+                    // Otherwise show the setup modal
+                    setShowSessionKeyModal(true);
+                  }}
+                  disabled={signing || busy}
+                >
+                  Delegated Signing
+                </button>
                 <button
                   type="button"
                   className="rounded-lg border border-orange-300 bg-orange-200 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-orange-800 hover:bg-orange-300"
@@ -988,6 +1039,21 @@ export function WalletConnectModal({
             </div>
           )}
         </div>
+
+        {/* Session Key Setup Modal */}
+        {showSessionKeyModal && account && (
+          <SessionKeySetupModal
+            authority={account.address}
+            pendingMessage={signingRequestForWallet?.messageBytes}
+            pendingRequestId={signingRequestForWallet?.requestId}
+            pendingTopic={signingRequestForWallet?.topic}
+            onComplete={() => {
+              setShowSessionKeyModal(false);
+              setStatus('Message signed with session key.');
+            }}
+            onCancel={() => setShowSessionKeyModal(false)}
+          />
+        )}
       </div>
     </div>
   );
