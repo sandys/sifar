@@ -244,54 +244,10 @@ class TrezorConnectLike {
           throw new Error(`Unexpected response: ${response.type}`);
         }
 
-        // Debug: Log exactly what Trezor returns
-        const sig = response.message.signature;
-        this.log('Raw signature from Trezor:', {
-          type: typeof sig,
-          constructor: sig?.constructor?.name,
-          isBuffer: Buffer.isBuffer(sig),
-          isUint8Array: sig instanceof Uint8Array,
-          length: sig?.length,
-          byteLength: sig?.byteLength,
-          first10Bytes: sig?.slice ? Array.from(sig.slice(0, 10)) : 'N/A',
-          asStringFirst20: typeof sig === 'string' ? sig.substring(0, 20) : String(sig).substring(0, 20)
-        });
-
-        let signatureHex: string;
-
-        // Check if it's a Uint8Array or Buffer (raw bytes)
-        if (sig instanceof Uint8Array || Buffer.isBuffer(sig) || (sig && typeof sig.length === 'number' && typeof sig[0] === 'number')) {
-          // Raw bytes - convert to hex
-          signatureHex = Buffer.from(sig).toString('hex');
-          this.log('Converted bytes to hex, length:', signatureHex.length);
-        } else if (typeof sig === 'string') {
-          // Check if it's already hex
-          if (/^[0-9a-fA-F]+$/.test(sig)) {
-            signatureHex = sig;
-            this.log('Using string as hex directly, length:', signatureHex.length);
-          } else {
-            // String but not hex - might be base64 or other encoding
-            this.log('String is not hex, trying base64 decode');
-            try {
-              const decoded = Buffer.from(sig, 'base64');
-              if (decoded.length === 64) {
-                signatureHex = decoded.toString('hex');
-                this.log('Decoded base64 to hex, length:', signatureHex.length);
-              } else {
-                signatureHex = Buffer.from(sig).toString('hex');
-                this.log('Base64 decode wrong length, using raw conversion');
-              }
-            } catch {
-              signatureHex = Buffer.from(sig).toString('hex');
-            }
-          }
-        } else {
-          // Unknown format
-          this.log('Unknown signature format, attempting Buffer.from');
-          signatureHex = Buffer.from(sig).toString('hex');
-        }
-
-        this.log('Final signature hex length:', signatureHex.length, 'expected: 128');
+        // The signature comes from @trezor/protobuf which already converts
+        // bytes fields to hex strings in decode.ts - no conversion needed
+        const signatureHex = response.message.signature;
+        this.log('Signature hex length:', signatureHex.length, '(expected 128)');
         return { success: true, payload: { signature: signatureHex } };
       } catch (err: any) {
         return { success: false, payload: { error: err.message || 'Failed' } };

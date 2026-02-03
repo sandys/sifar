@@ -1,4 +1,5 @@
-import { Transaction, VersionedTransaction, Connection } from '@solana/web3.js';
+import { Transaction, VersionedTransaction, Connection, PublicKey } from '@solana/web3.js';
+import nacl from 'tweetnacl';
 import { Buffer } from 'buffer';
 import bs58 from 'bs58';
 import { signSolanaTransaction } from './trezor';
@@ -114,9 +115,42 @@ export async function approveCurrentRequest() {
   if (!pending) throw new Error('No pending request');
 
   const { topic, requestId, rawBytes, messageBytes } = pending;
+
+  // Find the signer address from the transaction
+  let signerAddress: string;
+  try {
+    const vtx = VersionedTransaction.deserialize(rawBytes!);
+    signerAddress = vtx.message.staticAccountKeys[0].toBase58();
+  } catch {
+    const tx = Transaction.from(rawBytes!);
+    signerAddress = tx.feePayer?.toBase58() || '';
+  }
+
+  // Find the derivation path for this signer from our accounts
+  const matchingAccount = store.solanaAccounts.find(
+    (acc) => acc.address === signerAddress
+  );
+
+  if (!matchingAccount) {
+    throw new Error(
+      `No account found for signer ${signerAddress}. ` +
+      `Available accounts: ${store.solanaAccounts.map(a => a.address).join(', ')}`
+    );
+  }
+
+  const derivationPath = matchingAccount.path;
+
+  console.log('[Signing] Signing with:', {
+    derivationPath,
+    signerAddress,
+    storeAddress: store.solanaAddress,
+    messageBytesLength: messageBytes.length,
+    messageBytesHex: Buffer.from(messageBytes).toString('hex').substring(0, 64) + '...'
+  });
+
   const { signature: hexSig } = await signSolanaTransaction(
     messageBytes,
-    store.solanaDerivationPath
+    derivationPath
   );
 
   const sigBytes = normalizeSignature(hexSig);
@@ -129,6 +163,16 @@ export async function approveCurrentRequest() {
     isVersioned = true;
     const signerKey = vtx.message.staticAccountKeys[0];
     console.log('[Signing] VersionedTransaction signer:', signerKey.toBase58());
+    console.log('[Signing] Derivation path signer matches:', signerAddress === signerKey.toBase58());
+
+    // Verify signature locally before adding
+    const isValid = nacl.sign.detached.verify(
+      messageBytes,
+      sigBytes,
+      signerKey.toBytes()
+    );
+    console.log('[Signing] Local signature verification:', isValid ? 'VALID' : 'INVALID');
+
     vtx.addSignature(signerKey, sigBytes);
     signedTxBase64 = Buffer.from(vtx.serialize()).toString('base64');
   } catch (versionedError: any) {

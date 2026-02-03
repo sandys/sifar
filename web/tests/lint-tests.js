@@ -328,15 +328,22 @@ try {
   // Already checked above
 }
 
-// Ensure trezorConnect.ts handles signature format detection.
-// Trezor may return bytes OR hex string depending on protobuf version.
+// Ensure trezorConnect.ts uses signature directly from protobuf (already hex).
+// @trezor/protobuf decode.ts converts bytes fields to hex strings automatically.
 try {
   const trezorConnectFile = readRepoFile('web/lib/trezorConnect.ts');
-  // Ensure signature format is detected and handled
-  if (!trezorConnectFile.includes('signatureHex') || !trezorConnectFile.includes('typeof sig')) {
+  // Ensure signature is used directly (no double conversion)
+  if (!trezorConnectFile.includes('signatureHex')) {
     addError(
       'web/lib/trezorConnect.ts',
-      'solanaSignTransaction must detect and handle signature format (bytes or hex string)'
+      'solanaSignTransaction must use signatureHex variable for signature'
+    );
+  }
+  // Ensure we're NOT double-encoding the signature
+  if (trezorConnectFile.includes("Buffer.from(response.message.signature)")) {
+    addError(
+      'web/lib/trezorConnect.ts',
+      'Do not use Buffer.from on signature - @trezor/protobuf already returns hex string'
     );
   }
 } catch (error) {
@@ -361,6 +368,57 @@ try {
   }
 } catch (error) {
   addError('web/lib/signing.ts', 'Missing signing.ts for signature lint.');
+}
+
+// ============================================
+// CRITICAL: Signing Account Mismatch Prevention
+// ============================================
+// BUG HISTORY: Signing used store.solanaDerivationPath which could be a DIFFERENT
+// account than the transaction's signer. This caused signature verification failures
+// because Trezor signed with key A but transaction expected signature from key B.
+//
+// FIX: Extract signer address from transaction, find matching account, use its path.
+//
+// NEVER use store.solanaDerivationPath directly for signing - always derive from transaction signer.
+try {
+  const signingFile = readRepoFile('web/lib/signing.ts');
+
+  // MUST extract signer from transaction before signing
+  if (!signingFile.includes('staticAccountKeys[0]') && !signingFile.includes('feePayer')) {
+    addError(
+      'web/lib/signing.ts',
+      'CRITICAL: Must extract signer address from transaction (staticAccountKeys[0] or feePayer)'
+    );
+  }
+
+  // MUST find matching account by address
+  if (!signingFile.includes('solanaAccounts.find')) {
+    addError(
+      'web/lib/signing.ts',
+      'CRITICAL: Must find matching account by signer address, not use store.solanaDerivationPath directly'
+    );
+  }
+
+  // MUST NOT use store.solanaDerivationPath directly in signSolanaTransaction call
+  if (signingFile.includes('signSolanaTransaction') &&
+      signingFile.includes('store.solanaDerivationPath') &&
+      !signingFile.includes('matchingAccount')) {
+    addError(
+      'web/lib/signing.ts',
+      'CRITICAL: Do not use store.solanaDerivationPath for signing. ' +
+      'Extract signer from transaction and find matching account derivation path.'
+    );
+  }
+
+  // Should verify signature locally before sending
+  if (!signingFile.includes('nacl.sign.detached.verify') && !signingFile.includes('signature verification')) {
+    addError(
+      'web/lib/signing.ts',
+      'Should verify signature locally before sending to catch mismatches early'
+    );
+  }
+} catch (error) {
+  addError('web/lib/signing.ts', 'Missing signing.ts for account mismatch lint.');
 }
 
 // Ensure no double Buffer.from().toString('hex') patterns in any file (common mistake).
@@ -449,15 +507,49 @@ function checkErrorsHaveActions(file, content) {
   }
 }
 
-// Mistake: Signature handling without proper format logging
-// trezorConnect must log raw signature format details for debugging
+// Mistake: Signature handling without logging
+// trezorConnect should log signature length for debugging
 function checkSignatureLogging(file, content) {
   if (file === 'lib/trezorConnect.ts') {
     if (content.includes('SolanaTxSignature')) {
-      // Must log signature type and format before conversion
-      if (!content.includes('typeof sig') && !content.includes('constructor')) {
-        addError(file, 'Signature handling must log format details (typeof, constructor) before conversion.');
+      // Should log signature hex length for debugging
+      if (!content.includes('Signature hex length') && !content.includes('signatureHex.length')) {
+        addError(file, 'Signature handling should log hex length for debugging.');
       }
+    }
+  }
+}
+
+// Mistake: Double-encoding Trezor signature (128 hex chars became 256)
+// @trezor/protobuf decode.ts already converts bytes fields to hex strings.
+// Using Buffer.from(sig).toString('hex') on an already-hex string doubles the length.
+function checkTrezorSignatureEncoding(file, content) {
+  if (file === 'lib/trezorConnect.ts') {
+    // The signature from protobuf is ALREADY hex - do not re-encode
+    if (content.includes("Buffer.from(response.message.signature).toString('hex')") ||
+        content.includes('Buffer.from(sig).toString(\'hex\')')) {
+      addError(file,
+        'CRITICAL: Do not double-encode Trezor signature. ' +
+        '@trezor/protobuf already returns hex string. ' +
+        'Use response.message.signature directly.'
+      );
+    }
+  }
+}
+
+// Mistake: Using store.solanaDerivationPath instead of transaction signer's path
+// WalletConnect sessions can be connected with different accounts than the active UI account.
+// MUST extract signer from transaction and find matching account derivation path.
+function checkSigningAccountMismatch(file, content) {
+  if (file === 'lib/signing.ts') {
+    // If signing and using store.solanaDerivationPath without finding matching account
+    if (content.includes('signSolanaTransaction') &&
+        content.includes('store.solanaDerivationPath') &&
+        !content.includes('matchingAccount')) {
+      addError(file,
+        'CRITICAL: Signing must use derivation path from transaction signer, not store. ' +
+        'Extract signer from tx, find matching account, use that path.'
+      );
     }
   }
 }
@@ -496,6 +588,8 @@ function runIntrospectionLints(file, content) {
   checkNoStandaloneHeaders(file, content);
   checkErrorsHaveActions(file, content);
   checkSignatureLogging(file, content);
+  checkTrezorSignatureEncoding(file, content);
+  checkSigningAccountMismatch(file, content);
   checkNoRedundantDisplays(file, content);
   checkFilterUIClarity(file, content);
 }
