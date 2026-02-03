@@ -278,6 +278,19 @@ try {
       'Store should seed wcProjectId from NEXT_PUBLIC_WC_PROJECT_ID.'
     );
   }
+  // Ensure appReady state exists for global loading state
+  if (!storeFile.includes('appReady:')) {
+    addError(
+      'web/lib/store.ts',
+      'Store must have appReady state for global loading overlay.'
+    );
+  }
+  if (!storeFile.includes('setAppReady')) {
+    addError(
+      'web/lib/store.ts',
+      'Store must have setAppReady action to control loading state.'
+    );
+  }
 } catch (error) {
   addError('web/lib/store.ts', 'Missing store for WC project ID lint.');
 }
@@ -302,6 +315,79 @@ for (const pageFile of pageFiles) {
   } catch (error) {
     // Page might not exist, skip
   }
+}
+
+// ============================================
+// Global Loading State - Block UI Until Initialized
+// ============================================
+// BUG HISTORY: Page rendered before async initializations complete.
+// User clicks buttons (WC pairing, etc.) and nothing happens because services aren't ready.
+// FIX: Show a full-page loading overlay until critical services are initialized.
+
+// Ensure LoadingOverlay component exists and uses proper selector
+if (!fileExists('web/components/LoadingOverlay.tsx')) {
+  addError(
+    'web/components/LoadingOverlay.tsx',
+    'Missing LoadingOverlay component for global loading state.'
+  );
+} else {
+  try {
+    const loadingOverlay = readRepoFile('web/components/LoadingOverlay.tsx');
+    if (!loadingOverlay.includes('appReady')) {
+      addError(
+        'web/components/LoadingOverlay.tsx',
+        'LoadingOverlay must use appReady state from store.'
+      );
+    }
+    // Must use selector pattern
+    if (loadingOverlay.includes('useAppStore()') && !loadingOverlay.includes('useAppStore((')) {
+      addError(
+        'web/components/LoadingOverlay.tsx',
+        'LoadingOverlay must use useAppStore with selector, not useAppStore().'
+      );
+    }
+  } catch (error) {
+    addError('web/components/LoadingOverlay.tsx', 'Failed to read LoadingOverlay component.');
+  }
+}
+
+// Ensure providers.tsx properly sets appReady
+try {
+  const providersFile = readRepoFile('web/app/providers.tsx');
+  if (!providersFile.includes('setAppReady')) {
+    addError(
+      'web/app/providers.tsx',
+      'providers.tsx must call setAppReady to control loading state.'
+    );
+  }
+  if (!providersFile.includes('setAppReady(true)')) {
+    addError(
+      'web/app/providers.tsx',
+      'providers.tsx must set appReady to true after initialization.'
+    );
+  }
+  // Must have timeout to prevent infinite loading
+  if (!providersFile.includes('Init timeout') && !providersFile.includes('setTimeout')) {
+    addError(
+      'web/app/providers.tsx',
+      'providers.tsx must have timeout to prevent infinite loading spinner.'
+    );
+  }
+} catch (error) {
+  addError('web/app/providers.tsx', 'Failed to read providers for loading state lint.');
+}
+
+// Ensure main page includes LoadingOverlay
+try {
+  const trezorUsbPage = readRepoFile('web/app/trezor-usb/page.tsx');
+  if (!trezorUsbPage.includes('LoadingOverlay')) {
+    addError(
+      'web/app/trezor-usb/page.tsx',
+      'trezor-usb page must include LoadingOverlay to block UI until initialized.'
+    );
+  }
+} catch (error) {
+  addError('web/app/trezor-usb/page.tsx', 'Failed to read trezor-usb page for loading state lint.');
 }
 
 // Ensure Trezor signatures are normalized (128 bytes -> 64 bytes).
