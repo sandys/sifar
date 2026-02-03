@@ -16,7 +16,10 @@ const config: Config = {
       },
       fontFamily: {
         display: ['var(--font-display)', 'ui-sans-serif', 'system-ui'],
-        body: ['var(--font-body)', 'ui-sans-serif', 'system-ui']
+        body: ['var(--font-body)', 'ui-sans-serif', 'system-ui'],
+        jomhuria: ['var(--font-jomhuria)', 'serif'],
+        rakkas: ['var(--font-rakkas)', 'serif'],
+        aref: ['var(--font-aref)', 'serif']
       }
     }
   },

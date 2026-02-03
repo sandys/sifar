@@ -130,6 +130,11 @@ export async function getTrezorDeviceInfo(): Promise<{
   };
 }
 
+export async function disconnectTrezor(): Promise<void> {
+  await TrezorConnect.dispose();
+  initialized = false;
+}
+
 class TrezorError extends Error {
   code?: string;
 

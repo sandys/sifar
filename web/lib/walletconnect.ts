@@ -112,28 +112,52 @@ function collectSolanaRequest(
 export async function approveSessionProposal(
   proposalId: number,
   solanaAddress: string,
-  requiredNamespaces?: Record<string, any>,
-  optionalNamespaces?: Record<string, any>,
+  proposalParams: any,
   ethereumAddress?: string
 ): Promise<any> {
   const wallet = getWeb3Wallet();
+  const startTime = Date.now();
+
+  const requiredNamespaces = proposalParams?.requiredNamespaces;
+  const optionalNamespaces = proposalParams?.optionalNamespaces;
+  const expiryTimestamp = proposalParams?.expiryTimestamp;
+  const now = Math.floor(Date.now() / 1000);
 
   console.log('[WC] approveSessionProposal called', {
     proposalId,
     solanaAddress,
-    requiredNamespaces,
-    optionalNamespaces
+    expiryTimestamp,
+    now,
+    expiresInSeconds: expiryTimestamp ? expiryTimestamp - now : 'unknown',
+    requiredNamespaces: JSON.stringify(requiredNamespaces, null, 2),
+    optionalNamespaces: JSON.stringify(optionalNamespaces, null, 2)
   });
+
+  // Check if proposal has already expired
+  if (expiryTimestamp && now >= expiryTimestamp) {
+    console.error('[WC] Proposal has already expired!', {
+      expiryTimestamp,
+      now,
+      expiredSecondsAgo: now - expiryTimestamp
+    });
+    throw new Error('Session proposal has expired. Please try connecting again.');
+  }
 
   const solanaRequest = collectSolanaRequest(
     requiredNamespaces,
     optionalNamespaces
   );
+
+  // Always include accountsChanged event for Solana to ensure dApps receive
+  // account notifications after session approval (required by some AppKit dApps)
+  const solanaEvents = new Set(solanaRequest.events);
+  solanaEvents.add('accountsChanged');
+
   const supportedNamespaces: Record<string, any> = {
     solana: {
       chains: solanaRequest.chains,
       methods: DEFAULT_SOLANA_METHODS,
-      events: solanaRequest.events,
+      events: Array.from(solanaEvents),
       accounts: solanaRequest.chains.map(
         (chain: string) => `${chain}:${solanaAddress}`
       )
@@ -154,28 +178,32 @@ export async function approveSessionProposal(
     };
   }
 
-  console.log('[WC] Building namespaces with', { supportedNamespaces });
+  console.log('[WC] Building namespaces with supportedNamespaces:', JSON.stringify(supportedNamespaces, null, 2));
 
+  // Pass full proposal params as per WalletConnect docs
   const namespaces = buildApprovedNamespaces({
-    proposal: {
-      requiredNamespaces: requiredNamespaces || {},
-      optionalNamespaces: optionalNamespaces || {}
-    },
+    proposal: proposalParams,
     supportedNamespaces
   });
 
-  console.log('[WC] Built namespaces:', namespaces);
-  console.log('[WC] Calling wallet.approveSession...');
+  console.log('[WC] Built approved namespaces:', JSON.stringify(namespaces, null, 2));
+  console.log('[WC] Calling wallet.approveSession with proposalId:', proposalId);
 
   const session = await wallet.approveSession({
     id: proposalId,
     namespaces
   });
 
+  const approvalTime = Date.now() - startTime;
   console.log('[WC] Session approved successfully:', {
     topic: session.topic,
-    peer: session.peer?.metadata?.name
+    peer: session.peer?.metadata?.name,
+    approvalTimeMs: approvalTime,
+    namespaces: JSON.stringify(session.namespaces, null, 2)
   });
+
+  // Note: Solana namespace doesn't support accountsChanged events (unlike Ethereum).
+  // The session approval itself notifies the dApp of the connected account.
 
   return session;
 }
@@ -233,4 +261,54 @@ export async function disconnectSession(topic: string): Promise<void> {
     topic,
     reason: getSdkError('USER_DISCONNECTED')
   });
+}
+
+export async function pingSession(topic: string): Promise<boolean> {
+  const wallet = getWeb3Wallet();
+  try {
+    console.log('[WC] Pinging session:', topic);
+    await wallet.core.pairing.ping({ topic });
+    console.log('[WC] Ping successful');
+    return true;
+  } catch (error) {
+    console.warn('[WC] Ping failed, trying session ping:', error);
+    try {
+      // Try pinging the session directly
+      const sessions = wallet.getActiveSessions();
+      if (sessions[topic]) {
+        await wallet.engine.signClient.ping({ topic });
+        console.log('[WC] Session ping successful');
+        return true;
+      }
+    } catch (sessionError) {
+      console.error('[WC] Session ping failed:', sessionError);
+    }
+    return false;
+  }
+}
+
+export function getRelayConnectionState(): string {
+  try {
+    const wallet = getWeb3Wallet();
+    // @ts-ignore - accessing internal state
+    const relayer = wallet.core?.relayer;
+    if (!relayer) return 'unknown';
+    // @ts-ignore
+    return relayer.connected ? 'connected' : 'disconnected';
+  } catch {
+    return 'unknown';
+  }
+}
+
+export async function restartRelay(): Promise<void> {
+  const wallet = getWeb3Wallet();
+  console.log('[WC] Restarting relay connection...');
+  try {
+    // @ts-ignore - accessing internal method
+    await wallet.core?.relayer?.restartTransport();
+    console.log('[WC] Relay restarted');
+  } catch (error) {
+    console.error('[WC] Failed to restart relay:', error);
+    throw error;
+  }
 }

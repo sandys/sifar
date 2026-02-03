@@ -1,14 +1,16 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { Button } from '@/components/ui/Button';
-import { Card } from '@/components/ui/Card';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
-import { getSolanaAddress, getTrezorDeviceInfo, requestWebUSBDevice } from '@/lib/trezor';
+import { getSolanaAddress, getTrezorDeviceInfo, requestWebUSBDevice, disconnectTrezor } from '@/lib/trezor';
 import { useAppStore } from '@/lib/store';
+
+const CONNECTION_TIMEOUT_MS = 60000; // 60 seconds timeout
 
 export function TrezorUsbClient() {
   const trezorConnected = useAppStore((state) => state.trezorConnected);
+  const trezorDeviceInfo = useAppStore((state) => state.trezorDeviceInfo);
   const solanaAddress = useAppStore((state) => state.solanaAddress);
   const setPassphraseOnDeviceOnly = useAppStore(
     (state) => state.setPassphraseOnDeviceOnly
@@ -27,6 +29,8 @@ export function TrezorUsbClient() {
   const [error, setError] = useState<string | null>(null);
   const [onDeviceOnly, setOnDeviceOnly] = useState(false);
   const [progress, setProgress] = useState({ scanned: 0, found: 0 });
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const abortRef = useRef(false);
 
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -40,14 +44,45 @@ export function TrezorUsbClient() {
     [trezorConnected, solanaAddress]
   );
 
+  const handleDisconnect = async () => {
+    abortRef.current = true;
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+    try {
+      await disconnectTrezor();
+    } catch {
+      // Ignore disconnect errors
+    }
+    setTrezorConnected(false);
+    setTrezorDeviceInfo(null);
+    setSolanaAccounts([]);
+    setLoading(false);
+    setEnumerating(false);
+    setError(null);
+    setStatusMessage(null);
+  };
+
   const handleConnect = async () => {
     setError(null);
     setLoading(true);
     setEnumerating(false);
     setProgress({ scanned: 0, found: 0 });
     setStatusMessage('Connecting to Trezor…');
+    abortRef.current = false;
+
+    // Set timeout for connection
+    timeoutRef.current = setTimeout(() => {
+      if (loading && !trezorConnected) {
+        setError('Connection timed out. Device may be unresponsive. Try unplugging and reconnecting.');
+        handleDisconnect();
+      }
+    }, CONNECTION_TIMEOUT_MS);
+
     try {
       await requestWebUSBDevice();
+      if (abortRef.current) return;
       setStatusMessage('Fetching addresses…');
 
       const deviceInfoPromise = getTrezorDeviceInfo().catch(() => null);
@@ -64,8 +99,10 @@ export function TrezorUsbClient() {
       const MAX_ACCOUNTS = 200;
       let connectedSet = false;
       for (let i = 0; i < MAX_ACCOUNTS; i += 1) {
+        if (abortRef.current) return;
         try {
           const account = await getSolanaAddress(i, i === 0);
+          if (abortRef.current) return;
           const accountEntry = {
             address: account.address,
             path: account.path,
@@ -77,6 +114,11 @@ export function TrezorUsbClient() {
           accounts.push(accountEntry);
           setSolanaAccounts([...accounts]);
           if (i === 0) {
+            // Clear timeout once we get first address - device is responding
+            if (timeoutRef.current) {
+              clearTimeout(timeoutRef.current);
+              timeoutRef.current = null;
+            }
             setLoading(false);
             setEnumerating(true);
           }
@@ -133,32 +175,61 @@ export function TrezorUsbClient() {
       setEnumerating(false);
     } finally {
       setLoading(false);
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
     }
   };
 
   return (
-    <div className="grid gap-6">
-      <Card title="USB Trezor Connect">
-        <p className="text-sm text-steel">
-          Choose how to enter the passphrase if your Trezor requires one. The
-          browser will ask for WebUSB access first.
-        </p>
+    <section className="rounded-3xl border border-amber-200/40 bg-white/70 p-6 shadow-[0_20px_60px_-40px_rgba(0,0,0,0.6)]">
+      <h1 className="font-rakkas text-5xl tracking-wide text-ink">
+        Sifar
+      </h1>
+      <p className="mt-1 font-aref text-lg text-amber-700">
+        Zero. Your Trezor does everything.
+      </p>
+      <p className="mt-4 text-sm text-steel">
+        Connect via USB-OTG, then Sifar steps aside. Passphrase entry happens on
+        your device. Nothing is stored, nothing is trusted.
+      </p>
         <label className="mt-3 flex items-center gap-2 text-xs text-steel">
           <input
             type="checkbox"
             checked={onDeviceOnly}
             onChange={(event) => setOnDeviceOnly(event.target.checked)}
           />
-          Require passphrase entry on device only
+          Enter passphrase on device only
         </label>
         <div className="mt-4 flex items-center gap-3">
-          <Button onClick={handleConnect} disabled={loading}>
-            {loading ? 'Connecting…' : 'Connect + List'}
-          </Button>
+          {connected ? (
+            <button
+              onClick={handleDisconnect}
+              className="rounded-xl border-2 border-red-400 bg-red-50 px-4 py-2 text-sm font-semibold text-red-600 transition hover:bg-red-100"
+            >
+              Disconnect Trezor
+            </button>
+          ) : (
+            <Button onClick={handleConnect} disabled={loading}>
+              {loading ? 'Connecting…' : 'Connect Trezor'}
+            </Button>
+          )}
+          {loading && (
+            <button
+              onClick={handleDisconnect}
+              className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-100"
+            >
+              Cancel
+            </button>
+          )}
         </div>
         {loading && (
           <div className="mt-4">
             <LoadingSpinner label="Waiting for Trezor…" />
+            <p className="mt-2 text-xs text-steel">
+              Timeout in {Math.round(CONNECTION_TIMEOUT_MS / 1000)}s if device doesn&apos;t respond.
+            </p>
           </div>
         )}
         {!loading && enumerating && (
@@ -167,10 +238,19 @@ export function TrezorUsbClient() {
           </p>
         )}
         {error && <p className="mt-3 text-xs text-ember">{error}</p>}
-        {connected && (
+        {connected && trezorDeviceInfo && (
+          <div className="mt-3 rounded-xl border border-moss/30 bg-moss/10 p-3">
+            <p className="text-xs font-semibold text-moss">Connected</p>
+            <div className="mt-2 grid gap-1 text-xs text-steel">
+              <div><span className="font-medium">Device:</span> {trezorDeviceInfo.label}</div>
+              <div><span className="font-medium">Model:</span> {trezorDeviceInfo.model}</div>
+              <div><span className="font-medium">Firmware:</span> {trezorDeviceInfo.firmwareVersion}</div>
+            </div>
+          </div>
+        )}
+        {connected && !trezorDeviceInfo && (
           <p className="mt-3 text-xs text-moss">Trezor connected.</p>
         )}
-      </Card>
-    </div>
+    </section>
   );
 }

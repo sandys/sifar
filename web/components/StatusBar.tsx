@@ -6,7 +6,7 @@ import { useAppStore } from '@/lib/store';
 export function StatusBar() {
   const trezorConnected = useAppStore((state) => state.trezorConnected);
   const wcInitialized = useAppStore((state) => state.wcInitialized);
-  const activeSession = useAppStore((state) => state.activeSession);
+  const activeSessions = useAppStore((state) => state.activeSessions);
 
   const webUsbSupported = useMemo(() => {
     if (typeof navigator === 'undefined') return false;
@@ -39,10 +39,10 @@ export function StatusBar() {
         </span>
         <span
           className={`rounded-full px-3 py-1 text-xs font-semibold ${
-            activeSession ? 'bg-moss text-white' : 'bg-amber-200 text-steel'
+            activeSessions.length > 0 ? 'bg-moss text-white' : 'bg-amber-200 text-steel'
           }`}
         >
-          Session {activeSession ? 'Active' : 'Idle'}
+          {activeSessions.length > 0 ? `${activeSessions.length} Session${activeSessions.length > 1 ? 's' : ''}` : 'No Sessions'}
         </span>
       </div>
       {!webUsbSupported && (

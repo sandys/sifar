@@ -29,8 +29,8 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
 
   useLayoutEffect(() => {
     if (typeof window === 'undefined') return;
-    if ((window as any).__vaultConsolePatched) return;
-    (window as any).__vaultConsolePatched = true;
+    if ((window as any).__sifarConsolePatched) return;
+    (window as any).__sifarConsolePatched = true;
 
     const levels: Array<keyof Console> = ['log', 'info', 'warn', 'error'];
     const originals = new Map<keyof Console, (...args: any[]) => void>();
@@ -52,8 +52,8 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
 
     append('[Debug] console capture enabled');
 
-    const buffer = ((window as any).__vaultLogBuffer =
-      (window as any).__vaultLogBuffer || []);
+    const buffer = ((window as any).__sifarLogBuffer =
+      (window as any).__sifarLogBuffer || []);
 
     levels.forEach((level) => {
       const original = console[level].bind(console);
@@ -108,13 +108,27 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
 
         wallet.on('session_proposal', async (proposal) => {
           const { id, params } = proposal;
+          const expiryTimestamp = params.expiryTimestamp;
+          const now = Math.floor(Date.now() / 1000);
+          const expiresIn = expiryTimestamp ? expiryTimestamp - now : 'unknown';
           console.log('[WC] session_proposal received', {
             id,
             proposer: params.proposer.metadata.name,
+            expiryTimestamp,
+            now,
+            expiresInSeconds: expiresIn,
             requiredNamespaces: params.requiredNamespaces,
             optionalNamespaces: params.optionalNamespaces
           });
           const store = useAppStore.getState();
+
+          // Log to event log
+          store.addWcEvent({
+            type: 'session_proposal',
+            peerName: params.proposer.metadata.name,
+            details: `Session proposal from ${params.proposer.metadata.name} (${params.proposer.metadata.url})`,
+            rawParams: JSON.stringify({ id, requiredNamespaces: params.requiredNamespaces, optionalNamespaces: params.optionalNamespaces }, null, 2)
+          });
           const autoAddress = store.wcAutoApproveAddress;
 
           if (autoAddress) {
@@ -123,16 +137,16 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
               const session = await approveSessionProposal(
                 id,
                 autoAddress,
-                params.requiredNamespaces,
-                params.optionalNamespaces
+                params
               );
               console.log('[WC] Auto-approval successful, session topic:', session.topic);
-              store.setActiveSession({
+              store.addActiveSession({
                 topic: session.topic,
                 peerName: session.peer.metadata.name,
                 peerUrl: session.peer.metadata.url,
                 peerIcon: session.peer.metadata.icons?.[0],
-                chains: Object.keys(session.namespaces || {})
+                chains: Object.keys(session.namespaces || {}),
+                walletAddress: autoAddress
               });
               store.setStatusMessage(
                 `Connected to ${session.peer.metadata.name}.`
@@ -148,6 +162,7 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
           console.log('[WC] Setting pendingProposal for manual approval');
           setPendingProposal({
             id,
+            params, // Store full params for buildApprovedNamespaces
             proposer: params.proposer.metadata,
             requiredNamespaces: params.requiredNamespaces,
             optionalNamespaces: params.optionalNamespaces
@@ -155,14 +170,64 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
         });
 
         wallet.on('session_request', async (event) => {
+          const method = event.params?.request?.method;
+          const params = event.params?.request?.params;
+          console.log('[WC] session_request event received', {
+            id: event.id,
+            topic: event.topic,
+            method
+          });
+
+          // Find the session to get peer name
+          const sessions = wallet.getActiveSessions();
+          const session = sessions[event.topic];
+          const peerName = session?.peer?.metadata?.name || 'Unknown';
+
+          // Log to event log
+          useAppStore.getState().addWcEvent({
+            type: 'session_request',
+            peerName,
+            method,
+            topic: event.topic,
+            details: `${method} request from ${peerName}`,
+            rawParams: JSON.stringify({ id: event.id, topic: event.topic, method, params }, null, 2)
+          });
+
           await handleSessionRequest(event);
         });
 
         wallet.on('session_delete', (event) => {
+          console.log('[WC] session_delete received:', event.topic);
+          useAppStore.getState().addWcEvent({
+            type: 'session_deleted',
+            topic: event.topic,
+            details: `Session deleted: ${event.topic.substring(0, 16)}...`,
+            rawParams: JSON.stringify(event, null, 2)
+          });
           removeActiveSession(event.topic);
         });
-      } catch (error) {
+
+        wallet.on('proposal_expire', (event) => {
+          console.log('[WC] proposal_expire received:', event);
+          // Clear pending proposal if it expired
+          const store = useAppStore.getState();
+          store.addWcEvent({
+            type: 'error',
+            details: `Session proposal expired (id: ${event.id})`,
+            rawParams: JSON.stringify(event, null, 2)
+          });
+          if (store.pendingProposal?.id === event.id) {
+            store.setPendingProposal(null);
+            store.setStatusMessage('Session proposal expired. Please try again.');
+          }
+        });
+      } catch (error: any) {
         console.error('[WC] Init failed:', error);
+        useAppStore.getState().addWcEvent({
+          type: 'error',
+          details: `WalletConnect init failed: ${error?.message || 'Unknown error'}`,
+          rawParams: JSON.stringify({ error: error?.message, stack: error?.stack }, null, 2)
+        });
       }
     }
 

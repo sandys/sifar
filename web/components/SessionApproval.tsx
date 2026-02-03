@@ -9,7 +9,7 @@ import { useAppStore } from '@/lib/store';
 export function SessionApproval() {
   const pendingProposal = useAppStore((state) => state.pendingProposal);
   const solanaAddress = useAppStore((state) => state.solanaAddress);
-  const setActiveSession = useAppStore((state) => state.setActiveSession);
+  const addActiveSession = useAppStore((state) => state.addActiveSession);
   const clearPendingProposal = useAppStore(
     (state) => state.clearPendingProposal
   );
@@ -33,15 +33,15 @@ export function SessionApproval() {
       const session = await approveSessionProposal(
         id,
         solanaAddress,
-        pendingProposal.requiredNamespaces,
-        pendingProposal.optionalNamespaces
+        pendingProposal.params
       );
-      setActiveSession({
+      addActiveSession({
         topic: session.topic,
         peerName: session.peer.metadata.name,
         peerUrl: session.peer.metadata.url,
         peerIcon: session.peer.metadata.icons?.[0],
-        chains: Object.keys(session.namespaces || {})
+        chains: Object.keys(session.namespaces || {}),
+        walletAddress: solanaAddress
       });
       clearPendingProposal();
       setStatusMessage(`Connected to ${proposer.name}.`);

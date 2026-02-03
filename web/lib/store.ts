@@ -31,10 +31,12 @@ interface WCSession {
   peerUrl: string;
   peerIcon?: string;
   chains: string[];
+  walletAddress: string;
 }
 
 interface PendingProposal {
   id: number;
+  params: any; // Full proposal params for buildApprovedNamespaces
   proposer: {
     name: string;
     url: string;
@@ -57,6 +59,17 @@ interface PendingRequest {
   sendAfterSign?: boolean;
 }
 
+interface WCEventLogEntry {
+  id: string;
+  timestamp: number;
+  type: 'pairing_started' | 'pairing_success' | 'session_proposal' | 'session_approved' | 'session_rejected' | 'session_request' | 'request_approved' | 'request_rejected' | 'session_deleted' | 'error';
+  peerName?: string;
+  method?: string;
+  topic?: string;
+  details: string;
+  rawParams?: string;
+}
+
 interface AppState {
   trezorConnected: boolean;
   trezorDeviceInfo: DeviceInfo | null;
@@ -71,11 +84,12 @@ interface AppState {
   solanaAccounts: SolanaAccount[];
   activeAccountIndex: number;
   wcInitialized: boolean;
-  activeSession: WCSession | null;
+  activeSessions: WCSession[];
   pendingProposal: PendingProposal | null;
   pendingRequest: PendingRequest | null;
   statusMessage: string | null;
   debugLogs: string[];
+  wcEventLog: WCEventLogEntry[];
 
   setTrezorConnected: (connected: boolean) => void;
   setTrezorDeviceInfo: (info: DeviceInfo | null) => void;
@@ -89,8 +103,9 @@ interface AppState {
   setSolanaAccounts: (accounts: SolanaAccount[]) => void;
   setActiveAccount: (index: number) => void;
   setWcInitialized: (initialized: boolean) => void;
-  setActiveSession: (session: WCSession | null) => void;
+  addActiveSession: (session: WCSession) => void;
   removeActiveSession: (topic: string) => void;
+  getSessionsForAddress: (address: string) => WCSession[];
   setPendingProposal: (proposal: PendingProposal | null) => void;
   clearPendingProposal: () => void;
   setPendingRequest: (request: PendingRequest | null) => void;
@@ -100,6 +115,8 @@ interface AppState {
   refreshSolanaAccountBalance: (index: number) => Promise<void>;
   appendDebugLog: (line: string) => void;
   clearDebugLog: () => void;
+  addWcEvent: (event: Omit<WCEventLogEntry, 'id' | 'timestamp'>) => void;
+  clearWcEventLog: () => void;
 }
 
 function normalizeAccount(account: SolanaAccount): SolanaAccount {
@@ -127,11 +144,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
   solanaAccounts: [],
   activeAccountIndex: 0,
   wcInitialized: false,
-  activeSession: null,
+  activeSessions: [],
   pendingProposal: null,
   pendingRequest: null,
   statusMessage: null,
   debugLogs: [],
+  wcEventLog: [],
 
   setTrezorConnected: (connected) => set({ trezorConnected: connected }),
   setTrezorDeviceInfo: (info) => set({ trezorDeviceInfo: info }),
@@ -169,11 +187,19 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
   },
   setWcInitialized: (initialized) => set({ wcInitialized: initialized }),
-  setActiveSession: (session) => set({ activeSession: session }),
-  removeActiveSession: (topic) => {
-    const session = get().activeSession;
-    if (session?.topic === topic) set({ activeSession: null });
-  },
+  addActiveSession: (session) =>
+    set((state) => ({
+      activeSessions: [
+        ...state.activeSessions.filter((s) => s.topic !== session.topic),
+        session
+      ]
+    })),
+  removeActiveSession: (topic) =>
+    set((state) => ({
+      activeSessions: state.activeSessions.filter((s) => s.topic !== topic)
+    })),
+  getSessionsForAddress: (address) =>
+    get().activeSessions.filter((s) => s.walletAddress === address),
   setPendingProposal: (proposal) => set({ pendingProposal: proposal }),
   clearPendingProposal: () => set({ pendingProposal: null }),
   setPendingRequest: (request) => set({ pendingRequest: request }),
@@ -234,5 +260,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
       const next = [...state.debugLogs, line].slice(-500);
       return { debugLogs: next };
     }),
-  clearDebugLog: () => set({ debugLogs: [] })
+  clearDebugLog: () => set({ debugLogs: [] }),
+  addWcEvent: (event) =>
+    set((state) => {
+      const entry: WCEventLogEntry = {
+        ...event,
+        id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        timestamp: Date.now()
+      };
+      const next = [entry, ...state.wcEventLog].slice(0, 100); // Keep last 100 events
+      return { wcEventLog: next };
+    }),
+  clearWcEventLog: () => set({ wcEventLog: [] })
 }));

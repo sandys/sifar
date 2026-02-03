@@ -21,7 +21,7 @@ export function DebugPanel() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const buffer = (window as any).__vaultLogBuffer;
+    const buffer = (window as any).__sifarLogBuffer;
     if (Array.isArray(buffer) && buffer.length && debugLogs.length === 0) {
       buffer.forEach((line: string) => appendDebugLog(line));
     }
@@ -87,7 +87,7 @@ export function DebugPanel() {
 
   return (
     <section className="rounded-3xl border border-amber-200/40 bg-white/80 p-5 text-xs text-steel">
-      <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-amber-700">
+      <p className="font-aref text-lg text-amber-700">
         Debug
       </p>
       <div className="mt-3 flex items-center justify-between">
