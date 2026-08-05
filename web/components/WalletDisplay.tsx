@@ -14,14 +14,21 @@ export function WalletDisplay() {
   const trezorDeviceInfo = useAppStore((state) => state.trezorDeviceInfo);
   const activeSessions = useAppStore((state) => state.activeSessions);
   const pendingRequest = useAppStore((state) => state.pendingRequest);
-  const setActiveAccount = useAppStore((state) => state.setActiveAccount);
+  const walletConnectModalAccountIndex = useAppStore(
+    (state) => state.walletConnectModalAccountIndex
+  );
+  const openWalletConnectModal = useAppStore(
+    (state) => state.openWalletConnectModal
+  );
+  const closeWalletConnectModal = useAppStore(
+    (state) => state.closeWalletConnectModal
+  );
   const refreshSolanaAccountBalance = useAppStore(
     (state) => state.refreshSolanaAccountBalance
   );
   const [page, setPage] = useState(0);
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState<Set<number>>(() => new Set());
-  const [wcModalIndex, setWcModalIndex] = useState<number | null>(null);
   const [filterConnected, setFilterConnected] = useState(false);
   const pageSize = 5;
   const urlStateChecked = useRef(false);
@@ -71,11 +78,15 @@ export function WalletDisplay() {
   }, [copiedAddress]);
 
   useEffect(() => {
-    if (wcModalIndex === null) return;
-    if (!solanaAccounts[wcModalIndex]) {
-      setWcModalIndex(null);
+    if (walletConnectModalAccountIndex === null) return;
+    if (!solanaAccounts[walletConnectModalAccountIndex]) {
+      closeWalletConnectModal();
     }
-  }, [solanaAccounts, wcModalIndex]);
+  }, [
+    closeWalletConnectModal,
+    solanaAccounts,
+    walletConnectModalAccountIndex
+  ]);
 
   // Check for URL state and auto-open modal on mount
   useEffect(() => {
@@ -88,20 +99,26 @@ export function WalletDisplay() {
       const index = parseInt(storedIndex, 10);
       if (!isNaN(index) && index >= 0 && index < solanaAccounts.length) {
         console.log('[WalletDisplay] Auto-opening modal from URL state, index:', index);
-        setActiveAccount(index);
-        setWcModalIndex(index);
+        openWalletConnectModal(index);
       }
       // Clear after use
       sessionStorage.removeItem('urlState_activeAccountIndex');
     }
-  }, [solanaAccounts, setActiveAccount]);
+  }, [openWalletConnectModal, solanaAccounts]);
 
   // Update URL hash when modal opens (captures current state for bookmarking)
   useEffect(() => {
-    if (wcModalIndex !== null && solanaAccounts.length > 0) {
-      generateShareableUrl(wcModalIndex);
+    if (
+      walletConnectModalAccountIndex !== null &&
+      solanaAccounts.length > 0
+    ) {
+      generateShareableUrl(walletConnectModalAccountIndex);
     }
-  }, [wcModalIndex, solanaAccounts.length, generateShareableUrl]);
+  }, [
+    generateShareableUrl,
+    solanaAccounts.length,
+    walletConnectModalAccountIndex
+  ]);
 
   // Auto-open modal when there's a pending signing request
   useEffect(() => {
@@ -112,11 +129,20 @@ export function WalletDisplay() {
       const walletIndex = solanaAccounts.findIndex(
         (a) => a.address === session.walletAddress
       );
-      if (walletIndex >= 0 && wcModalIndex !== walletIndex) {
-        setWcModalIndex(walletIndex);
+      if (
+        walletIndex >= 0 &&
+        walletConnectModalAccountIndex !== walletIndex
+      ) {
+        openWalletConnectModal(walletIndex);
       }
     }
-  }, [pendingRequest, activeSessions, solanaAccounts, wcModalIndex]);
+  }, [
+    activeSessions,
+    openWalletConnectModal,
+    pendingRequest,
+    solanaAccounts,
+    walletConnectModalAccountIndex
+  ]);
 
   if (!solanaAddress) {
     return null;
@@ -130,6 +156,14 @@ export function WalletDisplay() {
         </h2>
         {solanaAccounts.length > 0 && (
           <div className="grid gap-2">
+            <div className="rounded-2xl border border-blue-200 bg-blue-50/70 p-3 text-xs text-blue-900">
+              <p className="font-semibold">Choose the account to connect</p>
+              <p className="mt-1 text-[11px] text-steel">
+                A WalletConnect URI pairs the dApp; it is not itself signed.
+                Hardware confirmation appears only after the dApp sends a
+                transaction or message request.
+              </p>
+            </div>
             <div className="flex items-center justify-between">
               <p className="text-xs font-semibold uppercase tracking-[0.25em] text-amber-700">
                 Accounts
@@ -174,15 +208,13 @@ export function WalletDisplay() {
                 <div
                   key={account.address}
                   onClick={() => {
-                    setActiveAccount(absoluteIndex);
-                    setWcModalIndex(absoluteIndex);
+                    openWalletConnectModal(absoluteIndex);
                   }}
                   role="button"
                   tabIndex={0}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
-                      setActiveAccount(absoluteIndex);
-                      setWcModalIndex(absoluteIndex);
+                      openWalletConnectModal(absoluteIndex);
                     }
                   }}
                   className={`flex items-start justify-between gap-3 rounded-2xl border px-3 py-2 text-left text-sm transition ${
@@ -221,6 +253,9 @@ export function WalletDisplay() {
                     </div>
                     <p className="mt-1 text-[10px] text-steel">
                       Path {account.path.replace('m/', '')}
+                    </p>
+                    <p className="mt-1 text-[10px] font-semibold text-blue-700">
+                      Click to connect this account with WalletConnect
                     </p>
                   </div>
                   <div className="text-right">
@@ -330,11 +365,13 @@ export function WalletDisplay() {
         )}
       </div>
       <WalletConnectModal
-        open={wcModalIndex !== null}
+        open={walletConnectModalAccountIndex !== null}
         account={
-          wcModalIndex !== null ? solanaAccounts[wcModalIndex] : undefined
+          walletConnectModalAccountIndex !== null
+            ? solanaAccounts[walletConnectModalAccountIndex]
+            : undefined
         }
-        onClose={() => setWcModalIndex(null)}
+        onClose={closeWalletConnectModal}
       />
     </section>
   );

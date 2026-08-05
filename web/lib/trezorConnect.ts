@@ -2,7 +2,11 @@
 
 import { Buffer } from 'buffer';
 import type { Descriptor, Session, WebUsbTransport } from '@trezor/transport';
-import { addStableSolanaMessageDefinitions } from './trezorMessages';
+import {
+  addStableSolanaMessageDefinitions,
+  getFirmwareVersion,
+  supportsStableSolanaOcmsV1
+} from './trezorMessages';
 
 type ConnectResult<T> =
   | { success: true; payload: T }
@@ -263,6 +267,23 @@ class TrezorConnectLike {
   }): Promise<ConnectResult<{ signature: string; signedData: string }>> {
     return this.enqueue(async () => {
       try {
+        await this.ensureSession();
+        const firmwareVersion = getFirmwareVersion(this.features);
+        this.log('Solana OCMS v1 request', {
+          firmwareVersion,
+          messageCharacters: params.message.length,
+          signerCount: params.signers.length,
+          derivationPathDepth: parsePath(params.path).length
+        });
+        if (
+          firmwareVersion !== 'unknown' &&
+          !supportsStableSolanaOcmsV1(this.features)
+        ) {
+          throw new Error(
+            `Solana OCMS v1 requires Trezor Core firmware 2.12.4 or newer. Device reports ${firmwareVersion}.`
+          );
+        }
+
         const response = await this.callWithUi('SolanaSignMessage', {
           address_n: parsePath(params.path),
           chunkify: params.chunkify ?? true,
@@ -517,7 +538,17 @@ class TrezorConnectLike {
       }
     } catch (error: any) {
       hadError = true;
-      const message = error?.message || 'Trezor error';
+      let message = error?.message || 'Trezor error';
+      if (
+        name === 'SolanaSignMessage' &&
+        /missing required field message/i.test(message)
+      ) {
+        const firmwareVersion = getFirmwareVersion(this.features);
+        this.log('OCMS v1 protobuf rejected', { firmwareVersion });
+        message =
+          `Trezor rejected the OCMS v1 request schema (firmware ${firmwareVersion}). ` +
+          'OCMS v1 requires Core firmware 2.12.4 or newer. Copy the debug log if the device already reports 2.12.4+.';
+      }
       suppressUiError = name === 'SolanaGetAddress';
       if (!suppressUiError) {
         this.emitUi({

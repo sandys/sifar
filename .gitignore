@@ -1,6 +1,27 @@
+# Dependencies
 web/node_modules/
+
+# Next.js and generated web build output
 web/.next/
-web/certificates/
+web/out/
+web/dist/
+web/build/
+web/.turbo/
+web/.swc/
+
+# Generated test output
+web/coverage/
 web/test-results/
+web/playwright-report/
+web/blob-report/
+
+# Generated local HTTPS material
+web/certificates/
+
+# Local environment and TypeScript caches
 web/.env*
-web/tsconfig.tsbuildinfo
+web/*.tsbuildinfo
+
+# Tool and OS artifacts
+*.log
+.DS_Store

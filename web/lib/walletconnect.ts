@@ -3,6 +3,10 @@ import { Web3Wallet, IWeb3Wallet } from '@walletconnect/web3wallet';
 import { buildApprovedNamespaces, getSdkError } from '@walletconnect/utils';
 import { SOLANA_MAINNET_CAIP2 } from './constants';
 import { useAppStore } from './store';
+import {
+  getSafeWalletConnectUriLog,
+  parseWalletConnectUri
+} from './walletConnectUri';
 
 let web3wallet: IWeb3Wallet | null = null;
 let projectIdOverride: string | null = null;
@@ -58,7 +62,11 @@ export function getWeb3Wallet(): IWeb3Wallet {
 }
 
 export async function pairWithDApp(wcUri: string): Promise<void> {
-  console.log('[WC] pairWithDApp called with URI:', wcUri.substring(0, 50) + '...');
+  const uriInfo = parseWalletConnectUri(wcUri);
+  console.log(
+    '[WC] pairWithDApp called',
+    getSafeWalletConnectUriLog(uriInfo)
+  );
   const wallet = await initWalletConnect();
   console.log('[WC] Calling wallet.core.pairing.pair...');
   await wallet.core.pairing.pair({ uri: wcUri });

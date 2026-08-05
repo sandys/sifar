@@ -8,7 +8,9 @@ import baseMessages from '@trezor/protobuf/messages.json';
 import {
   SOLANA_MESSAGE_SIGNATURE_TYPE,
   SOLANA_SIGN_MESSAGE_TYPE,
-  addStableSolanaMessageDefinitions
+  addStableSolanaMessageDefinitions,
+  getFirmwareVersion,
+  supportsStableSolanaOcmsV1
 } from './trezorMessages';
 
 describe('stable Solana message protobuf patch', () => {
@@ -72,5 +74,23 @@ describe('stable Solana message protobuf patch', () => {
         signed_data: '33'.repeat(80)
       }
     });
+  });
+
+  it('requires the stable Core firmware release that introduced OCMS v1', () => {
+    const previousRelease = {
+      major_version: 2,
+      minor_version: 12,
+      patch_version: 3
+    };
+    const stableV1Release = {
+      major_version: 2,
+      minor_version: 12,
+      patch_version: 4
+    };
+
+    expect(getFirmwareVersion(previousRelease)).toBe('2.12.3');
+    expect(supportsStableSolanaOcmsV1(previousRelease)).toBe(false);
+    expect(supportsStableSolanaOcmsV1(stableV1Release)).toBe(true);
+    expect(supportsStableSolanaOcmsV1(null)).toBe(false);
   });
 });

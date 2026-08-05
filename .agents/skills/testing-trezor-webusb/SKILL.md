@@ -26,8 +26,10 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
    docker compose exec web npm run lint
    docker compose exec web npm run typecheck
    docker compose exec web npm test
-   docker compose exec web npm run build
-   docker compose restart web
+   docker compose stop web
+   docker compose run --rm -e DEBUG= web sh -lc \
+     'find .next -mindepth 1 -delete 2>/dev/null || true; npm run build'
+   docker compose up -d web
    ```
 
 3. Confirm the application is healthy before involving USB:
@@ -38,14 +40,11 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
    docker compose logs --tail=200 web
    ```
 
-4. Remember the environment boundary: Docker and WSL serve JavaScript, but the
-   Windows Chromium browser owns WebUSB. Absence of `/dev/bus/usb` in WSL is not
-   a failure. Optionally check whether Windows enumerates Trezor before asking
-   for browser interaction:
-
-   ```bash
-   powershell.exe -NoProfile -Command "Get-PnpDevice -PresentOnly -Class USB | Where-Object { \$_.InstanceId -match 'VID_1209|VID_534C' -or \$_.FriendlyName -match 'Trezor' } | Select-Object Status,FriendlyName,InstanceId"
-   ```
+4. Remember the environment boundary: Docker and WSL serve JavaScript, while
+   the Chromium browser owns WebUSB. Absence of `/dev/bus/usb` in WSL is not a
+   failure. Do not invoke Windows host commands such as `powershell.exe`; device
+   selection and confirmation are verified through the browser UI and Sifar
+   debug terminal.
 
 5. Ask the human to unlock the latest-stable Core device, open
    `http://localhost:3001/trezor-usb` in Chrome/Edge, click **Connect Trezor**,
@@ -54,8 +53,12 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
 6. Verify addresses appear eagerly while enumeration continues. Balance/RPC
    errors are separate from hardware derivation and must display per-account
    failure without hiding valid addresses.
-7. Click **Test OCMS v1 Signing**, inspect the message on Trezor, and confirm it
-   physically. Require the page to report `PASS — signature verified locally`.
+7. Click **Open WalletConnect** or select an account, then paste a fresh `wc:`
+   URI or QR. The URI pairs the dApp and is not itself signed. Approve the
+   session, trigger a `solana_signMessage` request in the dApp, click **Sign with
+   Trezor**, inspect the message on-device, and confirm it physically. Require
+   the debug terminal to report local OCMS byte and Ed25519 verification before
+   the response is sent.
 8. If it fails, copy the debug terminal with its Copy button. Trace the sequence
    through `[Sifar] Call`, response type, UI request/response, returned
    `signed_data`, and local verification. Never log the entered passphrase.
@@ -66,7 +69,8 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
      lib/trezorMessages.test.ts \
      lib/solanaOffchainMessage.test.ts \
      lib/solanaMessageSigning.test.ts \
-     lib/walletConnectSolanaMessage.test.ts
+     lib/walletConnectSolanaMessage.test.ts \
+     lib/walletConnectUri.test.ts
    ```
 
    - `web/lib/trezorMessages.ts`: firmware protobuf IDs and fields.
@@ -79,8 +83,8 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
 - `requestDevice: No device selected` means the chooser was cancelled or no
   unlocked device was selectable. Reconnect/unlock, then invoke it again from a
   fresh user click; do not call `requestDevice()` automatically.
-- No Windows PnP result means the host does not currently enumerate Trezor.
-  Check the data cable/port and reconnect before debugging JavaScript.
+- An expired WalletConnect URI must fail before SDK pairing. Generate a fresh
+  QR in the dApp; never log or persist the URI because it contains `symKey`.
 - A stale `_next` chunk or `ChunkLoadError` after a build means the dev output
   volume and browser page disagree. Restart the service and hard-refresh; if it
   persists, remove only generated Compose volumes with `docker compose down -v`
@@ -97,6 +101,10 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
 - `Unexpected response: Features` can occur when firmware resets workflow
   state. The Connect-like loop retries once; repeated Features responses require
   release/reconnect rather than treating them as a signature.
+- `missing required field message` on `SolanaSignMessage` is the OCMS v0/v1
+  protobuf boundary: Core `2.12.1`-`2.12.3` required bytes field `2`, while
+  `2.12.4+` requires nested v1 field `4`. Check the firmware shown by Sifar;
+  do not guess from the updater saying the device is current.
 - `Forbidden key path` during address enumeration marks unsupported path range;
   it must stop background enumeration without replacing an active signing UI
   with an error prompt.
@@ -110,7 +118,7 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
 - Docker is healthy and `/trezor-usb` returns HTTP 200.
 - Lint, typecheck, full tests, focused OCMS tests, and build pass.
 - The intended hardware address/path is displayed from the physical device.
-- Physical OCMS v1 confirmation returns exact expected bytes and a locally
-  verified Ed25519 signature.
+- A real WalletConnect message request receives physical OCMS v1 confirmation,
+  exact expected bytes, and a locally verified Ed25519 signature.
 - Any remaining WalletConnect incompatibility is identified separately from
   transport, firmware, and signature correctness.

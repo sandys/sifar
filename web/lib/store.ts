@@ -88,6 +88,7 @@ interface AppState {
   splTokens: SPLToken[];
   solanaAccounts: SolanaAccount[];
   activeAccountIndex: number;
+  walletConnectModalAccountIndex: number | null;
   wcInitialized: boolean;
   appReady: boolean;
   activeSessions: WCSession[];
@@ -108,6 +109,8 @@ interface AppState {
   setSplTokens: (tokens: SPLToken[]) => void;
   setSolanaAccounts: (accounts: SolanaAccount[]) => void;
   setActiveAccount: (index: number) => void;
+  openWalletConnectModal: (index: number) => void;
+  closeWalletConnectModal: () => void;
   setWcInitialized: (initialized: boolean) => void;
   setAppReady: (ready: boolean) => void;
   addActiveSession: (session: WCSession) => void;
@@ -150,6 +153,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   splTokens: [],
   solanaAccounts: [],
   activeAccountIndex: 0,
+  walletConnectModalAccountIndex: null,
   wcInitialized: false,
   appReady: false,
   activeSessions: [],
@@ -172,14 +176,24 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setSplTokens: (tokens) => set({ splTokens: tokens }),
   setSolanaAccounts: (accounts) => {
     const normalized = accounts.map(normalizeAccount);
-    const first = normalized[0];
-    set({
-      solanaAccounts: normalized,
-      activeAccountIndex: 0,
-      solanaAddress: first?.address ?? null,
-      solanaDerivationPath: first?.path ?? "m/44'/501'/0'/0'",
-      solanaBalance: first?.balance ?? null,
-      splTokens: first?.tokens ?? []
+    set((state) => {
+      const activeAccountIndex = Math.min(
+        state.activeAccountIndex,
+        Math.max(0, normalized.length - 1)
+      );
+      const selected = normalized[activeAccountIndex];
+      const modalIndex = state.walletConnectModalAccountIndex;
+
+      return {
+        solanaAccounts: normalized,
+        activeAccountIndex,
+        walletConnectModalAccountIndex:
+          modalIndex !== null && normalized[modalIndex] ? modalIndex : null,
+        solanaAddress: selected?.address ?? null,
+        solanaDerivationPath: selected?.path ?? "m/44'/501'/0'/0'",
+        solanaBalance: selected?.balance ?? null,
+        splTokens: selected?.tokens ?? []
+      };
     });
   },
   setActiveAccount: (index) => {
@@ -194,6 +208,20 @@ export const useAppStore = create<AppState>()((set, get) => ({
       splTokens: selected.tokens
     });
   },
+  openWalletConnectModal: (index) => {
+    const selected = get().solanaAccounts[index];
+    if (!selected) return;
+    set({
+      activeAccountIndex: index,
+      walletConnectModalAccountIndex: index,
+      solanaAddress: selected.address,
+      solanaDerivationPath: selected.path,
+      solanaBalance: selected.balance,
+      splTokens: selected.tokens
+    });
+  },
+  closeWalletConnectModal: () =>
+    set({ walletConnectModalAccountIndex: null }),
   setWcInitialized: (initialized) => set({ wcInitialized: initialized }),
   setAppReady: (ready) => set({ appReady: ready }),
   addActiveSession: (session) =>

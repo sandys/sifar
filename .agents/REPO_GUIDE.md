@@ -13,7 +13,7 @@ fail closed unless the requested signer and returned signature are verified.
 
 ## Commands
 - Web setup/run (Docker only): `docker compose up --build -d`; open `http://localhost:3001/trezor-usb`.
-- Web build: `docker compose exec web npm run build && docker compose restart web`.
+- Web build: stop the dev service, run a clean one-off build, then restart: `docker compose stop web && docker compose run --rm -e DEBUG= web sh -lc 'find .next -mindepth 1 -delete 2>/dev/null || true; npm run build' && docker compose up -d web`.
 - Web test all: `docker compose exec web npm test` — single unit file: `docker compose exec web npx vitest run lib/solanaOffchainMessage.test.ts`.
 - Web lint/typecheck: `docker compose exec web node tests/lint-tests.js && docker compose exec web npm run lint && docker compose exec web npm run typecheck`.
 - Web logs/stop: `docker compose logs -f web` / `docker compose down`.
@@ -44,9 +44,10 @@ fail closed unless the requested signer and returned signature are verified.
 - PRs should state platform impact and affirm no private-key storage, no transaction modification, hardware-only signing, and chain validation.
 
 ## Gotchas & environment notes
-- WebUSB requires Chromium, a secure context/localhost, a user gesture for the chooser, and an unlocked device. WSL/Docker serves the site; Windows Chrome owns USB and physical confirmations.
+- WebUSB requires Chromium, a secure context/localhost, a user gesture for the chooser, and an unlocked device. WSL/Docker serves the site; the browser owns USB and physical confirmations. Do not invoke Windows host commands such as `powershell.exe` from this repo workflow.
 - Use only `@trezor/transport` plus `@trezor/protobuf`. `@trezor/connect-web`, `connect.trezor.io`, popup flows, and standalone Trezor Bridge are intentionally excluded.
 - Stable Core firmware `2.12.4+` implements OCMS v1: `SolanaSignMessage=906`, nested message field `4`, and `SolanaMessageSignature=907` with `signed_data` field `2`.
+- Core `2.12.1`-`2.12.3` used incompatible OCMS v0 bytes field `2`; `missing required field message` from an OCMS v1 request means the displayed firmware version must be checked before debugging transport.
 - The published protobuf package can lag firmware. Keep the immutable patch in `trezorMessages.ts`, and round-trip its request/response schema in tests.
 - WalletConnect `solana_signMessage` supplies raw base58 bytes, while Trezor signs the OCMS v1 domain-separated envelope. Return and verify `signedMessage`; legacy raw-message-only dApps may reject it.
 - Never double-hex protobuf byte fields: decoded Trezor signatures are already hex strings. Verify 64-byte signatures and exact firmware `signed_data` locally.
@@ -55,6 +56,7 @@ fail closed unless the requested signer and returned signature are verified.
 - Account addresses render eagerly while hardware enumeration continues; balance fetching must not block address discovery.
 - The stated design is stateless, but current URL restoration uses `sessionStorage` and WalletConnect maintains SDK storage. Do not claim zero browser persistence until that implementation is removed or redesigned.
 - Generate `web/package-lock.json` with the Node 20/npm 10 Docker toolchain; newer host npm can produce a lock that fails Docker `npm ci` on optional WASM packages.
+- Do not run `next build` while the dev server is using the shared `.next` volume; concurrent writers can leave missing vendor chunks. Stop the service and clean the generated directory first.
 - `npm test` skips the real-Trezor Playwright case unless explicitly enabled; physical WebUSB verification still requires chooser and device interaction.
 
 ## Working rules for agents

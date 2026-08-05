@@ -21,18 +21,15 @@ import {
 import { useAppStore } from '@/lib/store';
 import { setWalletConnectProjectId } from '@/lib/walletconnect';
 import { useUrlState } from '@/lib/hooks/useUrlState';
+import {
+  getSafeWalletConnectUriLog,
+  parseWalletConnectUri
+} from '@/lib/walletConnectUri';
 
 interface WalletConnectModalProps {
   open: boolean;
   account?: { address: string; path: string } | null;
   onClose: () => void;
-}
-
-function isValidWcUri(input: string) {
-  if (!input.startsWith('wc:')) return false;
-  if (!input.includes('@2')) return false;
-  if (!input.includes('symKey=')) return false;
-  return true;
 }
 
 export function WalletConnectModal({
@@ -271,17 +268,26 @@ export function WalletConnectModal({
       setError('WalletConnect Project ID required.');
       return;
     }
-    if (!isValidWcUri(cleaned)) {
-      setError('Invalid WalletConnect URI.');
+    let uriInfo;
+    try {
+      uriInfo = parseWalletConnectUri(cleaned);
+    } catch (validationError: any) {
+      setError(validationError?.message || 'Invalid WalletConnect URI.');
       return;
     }
+    const safeUriLog = getSafeWalletConnectUriLog(uriInfo);
     setError(null);
     setStatus('Pairing with dApp…');
     setBusy(true);
+    console.log('[Modal] Valid WalletConnect pairing URI', {
+      ...safeUriLog,
+      walletAddress: account.address,
+      derivationPath: account.path
+    });
     addWcEvent({
       type: 'pairing_started',
       details: `Initiating WalletConnect pairing`,
-      rawParams: JSON.stringify({ uri: cleaned.substring(0, 50) + '...' }, null, 2)
+      rawParams: JSON.stringify(safeUriLog, null, 2)
     });
     try {
       await pairWithDApp(cleaned);
@@ -495,6 +501,11 @@ export function WalletConnectModal({
               onChange={handleTextChange}
               onPaste={handleTextPaste}
             />
+            <p className="mt-1 text-[10px] text-steel">
+              Pasting starts pairing immediately. The URI is a secret pairing
+              credential, not the message being signed. Sifar&apos;s debug and
+              event entries include only sanitized pairing metadata.
+            </p>
           </div>
         </div>
 

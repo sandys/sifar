@@ -29,9 +29,11 @@ docker compose exec web node tests/lint-tests.js
 # TypeScript check
 docker compose exec web npx tsc --noEmit
 
-# Build (requires restart after, conflicts with dev server)
-docker compose exec web npx next build
-docker compose restart web
+# Build without racing the dev server's shared .next volume
+docker compose stop web
+docker compose run --rm -e DEBUG= web sh -lc \
+  'find .next -mindepth 1 -delete 2>/dev/null || true; npm run build'
+docker compose up -d web
 
 # Full test suite (regression lints + Vitest + Playwright)
 docker compose exec web npm test
@@ -107,7 +109,11 @@ The browser reconstructs the canonical OCMS v1 bytes, requires the WalletConnect
 
 WalletConnect currently defines `solana_signMessage` as signing its raw base58-decoded message. OCMS v1 signs a domain-separated envelope instead. The response therefore includes the standard `signature` plus `signedMessage` and `messageVersion` extension fields. Legacy dApps that verify only the raw message may reject an otherwise valid hardware signature.
 
-After connecting a device at `/trezor-usb`, use **Test OCMS v1 Signing** to run a physical confirmation and local verification check.
+After connecting a device at `/trezor-usb`, click **Open WalletConnect** (or an
+account), paste a fresh WalletConnect QR/URI, approve the proposal, and trigger
+the dApp's message request. The pairing URI is a secret connection credential;
+it is validated and expiry-checked but is not itself signed. Hardware
+confirmation begins only after the dApp sends a signing request.
 
 ## Environment Variables
 

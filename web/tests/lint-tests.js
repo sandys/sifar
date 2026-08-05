@@ -243,6 +243,18 @@ try {
       'WalletConnect approvals must use buildApprovedNamespaces.'
     );
   }
+  if (!wcFile.includes('parseWalletConnectUri')) {
+    addError(
+      'web/lib/walletconnect.ts',
+      'WalletConnect pairing must validate URI structure and expiry before SDK use.'
+    );
+  }
+  if (/console\.(?:log|info|warn|error)\([^\n]*wcUri/.test(wcFile)) {
+    addError(
+      'web/lib/walletconnect.ts',
+      'Never log a WalletConnect URI; it contains a symmetric key.'
+    );
+  }
 } catch (error) {
   addError('web/lib/walletconnect.ts', 'Missing walletconnect approval file.');
 }
@@ -845,12 +857,18 @@ try {
     'web/app/trezor-usb/trezor-usb-client.tsx'
   );
   if (
-    !hardwarePage.includes('Test OCMS v1 Signing') ||
-    !hardwarePage.includes('verifyTrezorSolanaMessageResult')
+    !hardwarePage.includes('Open WalletConnect') ||
+    !hardwarePage.includes('openWalletConnectModal')
   ) {
     addError(
       'web/app/trezor-usb/trezor-usb-client.tsx',
-      'Physical-device page must expose an OCMS v1 signing and verification check.'
+      'Physical-device page must route signing through the WalletConnect account modal.'
+    );
+  }
+  if (hardwarePage.includes('signSolanaMessage')) {
+    addError(
+      'web/app/trezor-usb/trezor-usb-client.tsx',
+      'Do not expose an unscoped direct-message signing action in the product UI.'
     );
   }
 } catch (error) {
@@ -864,7 +882,8 @@ const ocmsUnitTests = [
   'web/lib/solanaOffchainMessage.test.ts',
   'web/lib/trezorMessages.test.ts',
   'web/lib/solanaMessageSigning.test.ts',
-  'web/lib/walletConnectSolanaMessage.test.ts'
+  'web/lib/walletConnectSolanaMessage.test.ts',
+  'web/lib/walletConnectUri.test.ts'
 ];
 for (const file of ocmsUnitTests) {
   if (!fileExists(file)) {
