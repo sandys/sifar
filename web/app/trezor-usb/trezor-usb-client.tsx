@@ -3,7 +3,14 @@
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { Button } from '@/components/ui/Button';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
-import { getSolanaAddress, getTrezorDeviceInfo, requestWebUSBDevice, disconnectTrezor } from '@/lib/trezor';
+import {
+  disconnectTrezor,
+  getSolanaAddress,
+  getTrezorDeviceInfo,
+  requestWebUSBDevice,
+  signSolanaMessage
+} from '@/lib/trezor';
+import { verifyTrezorSolanaMessageResult } from '@/lib/solanaMessageSigning';
 import { useAppStore } from '@/lib/store';
 
 const CONNECTION_TIMEOUT_MS = 60000; // 60 seconds timeout
@@ -12,6 +19,9 @@ export function TrezorUsbClient() {
   const trezorConnected = useAppStore((state) => state.trezorConnected);
   const trezorDeviceInfo = useAppStore((state) => state.trezorDeviceInfo);
   const solanaAddress = useAppStore((state) => state.solanaAddress);
+  const solanaDerivationPath = useAppStore(
+    (state) => state.solanaDerivationPath
+  );
   const setPassphraseOnDeviceOnly = useAppStore(
     (state) => state.setPassphraseOnDeviceOnly
   );
@@ -29,6 +39,10 @@ export function TrezorUsbClient() {
   const [error, setError] = useState<string | null>(null);
   const [onDeviceOnly, setOnDeviceOnly] = useState(false);
   const [progress, setProgress] = useState({ scanned: 0, found: 0 });
+  const [messageTest, setMessageTest] = useState<{
+    state: 'idle' | 'signing' | 'passed' | 'failed';
+    detail?: string;
+  }>({ state: 'idle' });
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const abortRef = useRef(false);
 
@@ -61,7 +75,44 @@ export function TrezorUsbClient() {
     setLoading(false);
     setEnumerating(false);
     setError(null);
+    setMessageTest({ state: 'idle' });
     setStatusMessage(null);
+  };
+
+  const handleMessageSigningTest = async () => {
+    if (!solanaAddress) return;
+    const message = 'Sifar physical Trezor OCMS v1 signing test';
+    setMessageTest({ state: 'signing' });
+    setStatusMessage('Confirm the OCMS v1 message on your Trezor…');
+    try {
+      const result = await signSolanaMessage(
+        message,
+        solanaDerivationPath,
+        [solanaAddress]
+      );
+      const verified = verifyTrezorSolanaMessageResult({
+        message,
+        signerAddress: solanaAddress,
+        signatureHex: result.signature,
+        signedDataHex: result.signedData
+      });
+      console.log('[Hardware Test] OCMS v1 PASS', {
+        address: solanaAddress,
+        path: solanaDerivationPath,
+        signature: verified.signature,
+        signedMessage: verified.signedMessage
+      });
+      setMessageTest({
+        state: 'passed',
+        detail: verified.signature
+      });
+      setStatusMessage('OCMS v1 hardware signing verified.');
+    } catch (testError: any) {
+      const message = testError?.message || 'Message signing test failed';
+      console.error('[Hardware Test] OCMS v1 FAIL', message);
+      setMessageTest({ state: 'failed', detail: message });
+      setStatusMessage('OCMS v1 hardware signing failed.');
+    }
   };
 
   const handleConnect = async () => {
@@ -250,6 +301,39 @@ export function TrezorUsbClient() {
         )}
         {connected && !trezorDeviceInfo && (
           <p className="mt-3 text-xs text-moss">Trezor connected.</p>
+        )}
+        {connected && (
+          <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50/70 p-3">
+            <p className="text-xs font-semibold text-blue-800">
+              Physical OCMS v1 check
+            </p>
+            <p className="mt-1 text-[11px] text-steel">
+              Requires current stable Core firmware (2.12.4 or newer). The test
+              signs a fixed off-chain message, then verifies the exact bytes and
+              Ed25519 signature in this browser.
+            </p>
+            <button
+              type="button"
+              onClick={handleMessageSigningTest}
+              disabled={messageTest.state === 'signing'}
+              className="mt-3 rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-xs font-semibold text-blue-800 disabled:opacity-60"
+            >
+              {messageTest.state === 'signing'
+                ? 'Waiting for Trezor…'
+                : 'Test OCMS v1 Signing'}
+            </button>
+            {messageTest.state === 'passed' && (
+              <div className="mt-2 text-[11px] text-green-700">
+                <p className="font-semibold">PASS — signature verified locally</p>
+                <p className="mt-1 break-all font-mono">{messageTest.detail}</p>
+              </div>
+            )}
+            {messageTest.state === 'failed' && (
+              <p className="mt-2 break-words text-[11px] text-ember">
+                FAIL — {messageTest.detail}
+              </p>
+            )}
+          </div>
         )}
     </section>
   );

@@ -16,16 +16,8 @@ import {
   approveBatchRequest,
   approveAndSendRequest,
   approveMessageRequest,
-  rejectCurrentRequest,
-  respondToSessionKeyMessage
+  rejectCurrentRequest
 } from '@/lib/signing';
-import { SessionKeySetupModal } from './SessionKeySetupModal';
-import { SessionKeyStatus } from './SessionKeyStatus';
-import {
-  loadSessionKey,
-  isSessionKeyValid,
-  signWithSessionKey
-} from '@/lib/sessionKey';
 import { useAppStore } from '@/lib/store';
 import { setWalletConnectProjectId } from '@/lib/walletconnect';
 import { useUrlState } from '@/lib/hooks/useUrlState';
@@ -78,7 +70,6 @@ export function WalletConnectModal({
   const [expandedEvents, setExpandedEvents] = useState<Set<string>>(() => new Set());
   const [addressCopied, setAddressCopied] = useState(false);
   const [urlCopied, setUrlCopied] = useState(false);
-  const [showSessionKeyModal, setShowSessionKeyModal] = useState(false);
   const eventLogRef = useRef<HTMLDivElement>(null);
   const { copyShareableUrl } = useUrlState();
 
@@ -526,90 +517,7 @@ export function WalletConnectModal({
 
         {/* Signing Request - show prominently when there's a request */}
         {signingRequestForWallet && signingRequestSummary && (
-          signingRequestForWallet.type === 'solana_signMessage' ? (
-            /* Unsupported: Solana message signing */
-            <div className="mt-4 rounded-2xl border-2 border-orange-400 bg-orange-50 p-4 text-xs">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-orange-700">
-                Unsupported Request
-              </p>
-              <p className="mt-2 text-sm font-semibold text-ink">
-                Sign Message — Not Supported
-              </p>
-              <p className="mt-1 text-steel break-all">
-                {signingRequestSummary.description}
-              </p>
-              <div className="mt-3 rounded-lg border border-orange-200 bg-orange-100 p-3 text-[11px] text-orange-800">
-                <p className="font-semibold">Trezor Hardware Limitation</p>
-                <p className="mt-1">
-                  Trezor does not support Solana message signing. This is a firmware
-                  limitation — only transaction signing is supported.
-                </p>
-                <p className="mt-2">
-                  See:{' '}
-                  <a
-                    href="https://github.com/trezor/trezor-firmware/issues/4371"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="underline"
-                  >
-                    trezor-firmware #4371
-                  </a>
-                </p>
-                <p className="mt-3 border-t border-orange-200 pt-2">
-                  <span className="font-semibold">Experimental:</span> Use a delegated session key.
-                </p>
-                <p className="mt-1">
-                  Most dApps (pump.fun) will reject this - the signature comes from a different address.
-                </p>
-              </div>
-              {account && (
-                <div className="mt-3">
-                  <SessionKeyStatus authority={account.address} compact />
-                </div>
-              )}
-              <div className="mt-3 flex gap-2">
-                <button
-                  type="button"
-                  className="rounded-lg border border-blue-300 bg-blue-100 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-blue-700 hover:bg-blue-200"
-                  onClick={() => {
-                    // Check if we already have a valid session key
-                    if (account) {
-                      const existingKey = loadSessionKey(account.address);
-                      if (existingKey && isSessionKeyValid(existingKey) && signingRequestForWallet.messageBytes) {
-                        // Sign immediately with existing session key
-                        const { signature, proof } = signWithSessionKey(existingKey, signingRequestForWallet.messageBytes);
-                        respondToSessionKeyMessage(
-                          signingRequestForWallet.topic,
-                          signingRequestForWallet.requestId,
-                          signature,
-                          proof.sessionKey,
-                          proof.attestationTx
-                        ).then(() => {
-                          setStatus('Message signed with session key.');
-                        }).catch((err) => {
-                          setError(err?.message || 'Failed to sign with session key');
-                        });
-                        return;
-                      }
-                    }
-                    // Otherwise show the setup modal
-                    setShowSessionKeyModal(true);
-                  }}
-                  disabled={signing || busy}
-                >
-                  Delegated Signing
-                </button>
-                <button
-                  type="button"
-                  className="rounded-lg border border-orange-300 bg-orange-200 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-orange-800 hover:bg-orange-300"
-                  onClick={handleRejectSigning}
-                  disabled={signing || busy}
-                >
-                  Dismiss
-                </button>
-              </div>
-            </div>
-          ) : error ? (
+          error ? (
             /* Signing failed - show error state */
             <div className="mt-4 rounded-2xl border-2 border-red-400 bg-red-50 p-4 text-xs">
               <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-red-700">
@@ -653,6 +561,21 @@ export function WalletConnectModal({
               <p className="mt-1 text-steel break-all">
                 {signingRequestSummary.description}
               </p>
+              {signingRequestForWallet.type === 'solana_signMessage' && (
+                <div className="mt-3 rounded-lg border border-blue-200 bg-white/80 p-3 text-[11px] text-blue-900">
+                  <p className="font-semibold">Stable firmware OCMS v1</p>
+                  <p className="mt-1">
+                    Trezor signs the Solana off-chain v1 envelope and returns the
+                    exact signed bytes. Sifar verifies those bytes locally before
+                    replying.
+                  </p>
+                  <p className="mt-2 text-orange-700">
+                    Compatibility note: legacy dApps that verify the signature
+                    against only the raw WalletConnect message may reject this
+                    standards-safe hardware signature.
+                  </p>
+                </div>
+              )}
               <p className="mt-3 text-[10px] text-blue-600">
                 Confirm on your Trezor device after clicking Sign.
               </p>
@@ -1040,20 +963,6 @@ export function WalletConnectModal({
           )}
         </div>
 
-        {/* Session Key Setup Modal */}
-        {showSessionKeyModal && account && (
-          <SessionKeySetupModal
-            authority={account.address}
-            pendingMessage={signingRequestForWallet?.messageBytes}
-            pendingRequestId={signingRequestForWallet?.requestId}
-            pendingTopic={signingRequestForWallet?.topic}
-            onComplete={() => {
-              setShowSessionKeyModal(false);
-              setStatus('Message signed with session key.');
-            }}
-            onCancel={() => setShowSessionKeyModal(false)}
-          />
-        )}
       </div>
     </div>
   );

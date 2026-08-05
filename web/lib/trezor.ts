@@ -2,6 +2,7 @@
 
 import { Buffer } from 'buffer';
 import TrezorConnect from './trezorConnect';
+import { decodeSolanaPublicKey } from './solanaOffchainMessage';
 
 let initialized = false;
 
@@ -83,23 +84,31 @@ export async function signSolanaTransaction(
 }
 
 export async function signSolanaMessage(
-  message: Uint8Array,
-  derivationPath: string
-): Promise<{ signature: string }> {
+  message: string,
+  derivationPath: string,
+  signerAddresses: string[]
+): Promise<{ signature: string; signedData: string }> {
   await initTrezor();
   ensureBuffer();
 
-  const hexMessage = Buffer.from(message).toString('hex');
-  const result = await TrezorConnect.solanaSignTransaction({
+  const signers = signerAddresses.map((address) =>
+    Buffer.from(decodeSolanaPublicKey(address)).toString('hex')
+  );
+  const result = await TrezorConnect.solanaSignMessage({
     path: derivationPath,
-    serializedTx: hexMessage
+    message,
+    signers,
+    chunkify: true
   });
 
   if (!result.success) {
     throw new TrezorError(result.payload.error, result.payload.code);
   }
 
-  return { signature: result.payload.signature };
+  return {
+    signature: result.payload.signature,
+    signedData: result.payload.signedData
+  };
 }
 
 export async function checkTrezorAvailable(): Promise<boolean> {

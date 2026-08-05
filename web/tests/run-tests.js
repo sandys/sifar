@@ -11,10 +11,24 @@ if (lint.status !== 0) {
   process.exit(process.exitCode);
 }
 
-const result = spawnSync('npx', ['playwright', 'test'], {
+const unit = spawnSync('npx', ['vitest', 'run'], {
   stdio: 'inherit',
   env: process.env
 });
+
+if (unit.status !== 0) {
+  process.exitCode = unit.status || 1;
+  process.exit(process.exitCode);
+}
+
+const result = spawnSync(
+  'npx',
+  ['playwright', 'test', '--output=/tmp/sifar-playwright-results'],
+  {
+  stdio: 'inherit',
+  env: process.env
+  }
+);
 
 if (result.status !== 0) {
   process.exitCode = result.status || 1;

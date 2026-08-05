@@ -2,16 +2,23 @@ import { Transaction, VersionedTransaction, Connection, PublicKey } from '@solan
 import nacl from 'tweetnacl';
 import { Buffer } from 'buffer';
 import bs58 from 'bs58';
-import { signSolanaTransaction } from './trezor';
+import { signSolanaMessage, signSolanaTransaction } from './trezor';
 import { respondToSessionRequest, rejectSessionRequest } from './walletconnect';
 import { useAppStore } from './store';
 import { DEFAULT_SOLANA_RPC } from './constants';
+import {
+  decodeSolanaPublicKey,
+  equalBytes,
+  serializeSolanaOffchainMessageV1
+} from './solanaOffchainMessage';
+import { verifyTrezorSolanaMessageResult } from './solanaMessageSigning';
+import { prepareWalletConnectSolanaMessage } from './walletConnectSolanaMessage';
 
 /**
  * Convert hex signature to 64-byte Buffer.
  * Trezor returns signature as hex string (128 chars = 64 bytes).
  */
-function normalizeSignature(hexSig: string): Buffer {
+export function normalizeSignature(hexSig: string): Buffer {
   console.log('[Signing] Signature hex:', {
     length: hexSig.length,
     expectedHexLength: 128,
@@ -349,58 +356,41 @@ export async function approveAndSendRequest() {
   store.clearPendingRequest();
 }
 
-function isValidUtf8(bytes: Uint8Array): boolean {
-  try {
-    const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-    // Also check if it contains mostly printable characters
-    const printable = decoded.split('').filter(c => {
-      const code = c.charCodeAt(0);
-      return (code >= 32 && code < 127) || code === 10 || code === 13 || code === 9;
-    }).length;
-    return printable / decoded.length > 0.8; // At least 80% printable
-  } catch {
-    return false;
-  }
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
 async function handleSolanaSignMessage(
   topic: string,
   requestId: number,
   params: any
 ) {
-  const message = params.message;
-  const messageBytes =
-    typeof message === 'string'
-      ? Buffer.from(message, 'base64')
-      : new Uint8Array(message);
-
-  let humanMessage: string;
-  if (isValidUtf8(messageBytes)) {
-    humanMessage = new TextDecoder().decode(messageBytes);
-  } else {
-    // Show as hex with prefix for binary data
-    humanMessage = `[Binary: 0x${bytesToHex(messageBytes).substring(0, 64)}${messageBytes.length > 32 ? '...' : ''}]`;
+  const store = useAppStore.getState();
+  const session = store.activeSessions.find((item) => item.topic === topic);
+  if (!session) {
+    throw new Error('WalletConnect session is no longer active');
   }
+  const prepared = prepareWalletConnectSolanaMessage(
+    params,
+    session.walletAddress,
+    store.solanaAccounts
+  );
 
-  console.log('[Signing] Sign message request', {
-    rawLength: messageBytes.length,
-    isUtf8: isValidUtf8(messageBytes),
-    humanMessage: humanMessage.substring(0, 100)
+  console.log('[Signing] Solana OCMS v1 request', {
+    rawMessageBytes: prepared.messageBytes.length,
+    signedDataBytes: prepared.expectedSignedData.length,
+    signerAddress: prepared.signerAddress,
+    derivationPath: prepared.derivationPath,
+    preview: prepared.messageText.substring(0, 120)
   });
 
-  const store = useAppStore.getState();
   store.setPendingRequest({
     type: 'solana_signMessage',
     topic,
     requestId,
-    messageBytes,
-    humanMessage
+    messageBytes: prepared.messageBytes,
+    humanMessage: prepared.messageText,
+    messageText: prepared.messageText,
+    messageSignerAddress: prepared.signerAddress,
+    messageDerivationPath: prepared.derivationPath,
+    expectedSignedData: prepared.expectedSignedData,
+    messageProtocol: 'ocms-v1'
   });
 }
 
@@ -411,36 +401,61 @@ export async function approveMessageRequest() {
     throw new Error('No message request pending');
   }
 
-  // Trezor does not support Solana message signing
-  // See: https://github.com/trezor/trezor-firmware/issues/4371
-  throw new Error(
-    'Trezor does not support Solana message signing. ' +
-    'This is a hardware limitation. Only transaction signing is supported.'
+  const {
+    messageText,
+    messageSignerAddress,
+    messageDerivationPath,
+    expectedSignedData
+  } = pending;
+  if (
+    !messageText ||
+    !messageSignerAddress ||
+    !messageDerivationPath ||
+    !expectedSignedData
+  ) {
+    throw new Error('Solana off-chain signing request is incomplete');
+  }
+
+  const session = store.activeSessions.find(
+    (item) => item.topic === pending.topic
   );
-}
-
-/**
- * Respond to a message signing request using a session key.
- * The signature comes from the session key (not Trezor), along with the attestation proof.
- */
-export async function respondToSessionKeyMessage(
-  topic: string,
-  requestId: number,
-  signature: string,
-  sessionKey?: string,
-  attestationTx?: string
-): Promise<void> {
-  const store = useAppStore.getState();
-
-  // Build response with signature and optional proof
-  const response: any = { signature };
-  if (sessionKey) {
-    response.sessionKey = sessionKey;
+  if (!session || session.walletAddress !== messageSignerAddress) {
+    throw new Error('WalletConnect signer changed before approval');
   }
-  if (attestationTx) {
-    response.attestation = attestationTx;
+  const account = store.solanaAccounts.find(
+    (item) => item.address === messageSignerAddress
+  );
+  if (!account || account.path !== messageDerivationPath) {
+    throw new Error('Trezor account changed before approval');
   }
 
-  await respondToSessionRequest(topic, requestId, response);
+  const signerPublicKey = decodeSolanaPublicKey(messageSignerAddress);
+  const locallySerialized = serializeSolanaOffchainMessageV1(messageText, [
+    signerPublicKey
+  ]);
+  if (!equalBytes(locallySerialized, expectedSignedData)) {
+    throw new Error('Solana off-chain message changed before approval');
+  }
+
+  const { signature: signatureHex, signedData: signedDataHex } =
+    await signSolanaMessage(messageText, messageDerivationPath, [
+      messageSignerAddress
+    ]);
+  const verified = verifyTrezorSolanaMessageResult({
+    message: messageText,
+    signerAddress: messageSignerAddress,
+    signatureHex,
+    signedDataHex
+  });
+
+  console.log('[Signing] OCMS v1 signature verified locally', {
+    signerAddress: messageSignerAddress,
+    signedDataBytes: verified.signedDataBytes.length
+  });
+  await respondToSessionRequest(pending.topic, pending.requestId, {
+    signature: verified.signature,
+    signedMessage: verified.signedMessage,
+    messageVersion: 1
+  });
   store.clearPendingRequest();
 }

@@ -4,7 +4,7 @@ Instructions for Claude Code when working in this repository.
 
 ## Project Overview
 
-Sifar is a stateless Next.js web app that bridges Trezor hardware wallets to Solana dApps via WalletConnect v2. It uses direct WebUSB for device communication (no popup/iframe).
+Sifar is a Next.js web app that bridges Trezor hardware wallets to Solana dApps via WalletConnect v2. It uses direct WebUSB for device communication (no popup/iframe).
 
 **Security Model**: The app is "provably dumb" — cannot access private keys, cannot modify transactions. All signing requires physical device confirmation.
 
@@ -143,7 +143,7 @@ const signatureHex = response.message.signature;
 | `components/TrezorPrompt.tsx` | `ui-error` |
 | `lib/walletconnect.ts` | `buildApprovedNamespaces` |
 | `lib/signing.ts` | `normalizeSignature`, `staticAccountKeys[0]`, `solanaAccounts.find` |
-| `components/WalletConnectModal.tsx` | `solana_signMessage`, `Trezor Hardware Limitation` or `Not Supported` |
+| `components/WalletConnectModal.tsx` | `solana_signMessage`, `Stable firmware OCMS v1`, legacy raw-message compatibility warning |
 | `lib/store.ts` | `NEXT_PUBLIC_WC_PROJECT_ID`, `activeSessions:` |
 
 ### Forbidden Patterns
@@ -223,3 +223,5 @@ Before reaching for Read/Edit/Glob tools, ask:
 - Can `jq` extract this JSON data directly?
 
 Prioritize CLI power tools for faster code discovery, bulk refactoring, efficient file operations, and better performance overall.
+
+Agent guide: see .agents/REPO_GUIDE.md (skills in .agents/skills/).

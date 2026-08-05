@@ -403,19 +403,32 @@ try {
   addError('web/lib/signing.ts', 'Missing signing.ts for signature lint.');
 }
 
-// Ensure WalletConnectModal handles unsupported solana_signMessage properly.
+// Stable Core firmware supports Solana OCMS v1. Keep message requests on the
+// physical-device path and explain the raw WalletConnect compatibility edge.
 try {
   const modalFile = readRepoFile('web/components/WalletConnectModal.tsx');
   if (!modalFile.includes('solana_signMessage')) {
     addError(
       'web/components/WalletConnectModal.tsx',
-      'WalletConnectModal must handle unsupported solana_signMessage requests.'
+      'WalletConnectModal must handle solana_signMessage requests.'
     );
   }
-  if (!modalFile.includes('Trezor Hardware Limitation') && !modalFile.includes('Not Supported')) {
+  if (!modalFile.includes('Stable firmware OCMS v1')) {
     addError(
       'web/components/WalletConnectModal.tsx',
-      'WalletConnectModal must show unsupported message for solana_signMessage.'
+      'WalletConnectModal must identify the stable-firmware OCMS v1 flow.'
+    );
+  }
+  if (!modalFile.includes('legacy dApps') || !modalFile.includes('raw WalletConnect')) {
+    addError(
+      'web/components/WalletConnectModal.tsx',
+      'WalletConnectModal must warn that legacy raw-message verification is incompatible with OCMS.'
+    );
+  }
+  if (modalFile.includes('Delegated Signing') || modalFile.includes('SessionKey')) {
+    addError(
+      'web/components/WalletConnectModal.tsx',
+      'Message signing must not fall back to a software session key.'
     );
   }
 } catch (error) {
@@ -702,54 +715,161 @@ function runIntrospectionLints(file, content) {
 }
 
 // ============================================
-// Session Key Delegation Safeguards
+// Stable Physical Trezor OCMS Safeguards
 // ============================================
-// Session keys allow temporary message signing without Trezor.
-// MUST have expiration and revocation to limit risk.
 
-// Ensure session key has expiration
-try {
-  const sessionKeyFile = readRepoFile('web/lib/sessionKey.ts');
-  if (!sessionKeyFile.includes('expiresAt')) {
+const forbiddenSessionKeyFiles = [
+  'web/lib/sessionKey.ts',
+  'web/components/SessionKeySetupModal.tsx',
+  'web/components/SessionKeyStatus.tsx'
+];
+for (const file of forbiddenSessionKeyFiles) {
+  if (fileExists(file)) {
     addError(
-      'web/lib/sessionKey.ts',
-      'Session keys must have expiration time (expiresAt).'
+      file,
+      'Software session-key signing is forbidden; all signatures must come from Trezor.'
     );
   }
-  if (!sessionKeyFile.includes('isSessionKeyValid')) {
-    addError(
-      'web/lib/sessionKey.ts',
-      'Must validate session key expiration before use (isSessionKeyValid).'
-    );
-  }
-} catch (error) {
-  // File may not exist yet
 }
 
-// Ensure session key UI allows revocation
 try {
-  const sessionKeyStatusFile = readRepoFile('web/components/SessionKeyStatus.tsx');
-  if (!sessionKeyStatusFile.includes('clearSessionKey')) {
+  const trezorWrapper = readRepoFile('web/lib/trezor.ts');
+  const messageMethod = trezorWrapper.match(
+    /export async function signSolanaMessage[\s\S]*?\n}/
+  )?.[0] || '';
+  if (!messageMethod.includes('TrezorConnect.solanaSignMessage')) {
     addError(
-      'web/components/SessionKeyStatus.tsx',
-      'Session key UI must allow revocation (clearSessionKey).'
+      'web/lib/trezor.ts',
+      'signSolanaMessage must call the dedicated SolanaSignMessage protobuf API.'
+    );
+  }
+  if (messageMethod.includes('solanaSignTransaction')) {
+    addError(
+      'web/lib/trezor.ts',
+      'Never emulate message signing with solanaSignTransaction.'
     );
   }
 } catch (error) {
-  // File may not exist yet
+  addError('web/lib/trezor.ts', 'Missing Trezor message-signing wrapper.');
 }
 
-// Ensure session key setup modal warns about limitations
 try {
-  const sessionKeySetupFile = readRepoFile('web/components/SessionKeySetupModal.tsx');
-  if (!sessionKeySetupFile.includes('pump.fun') && !sessionKeySetupFile.includes('will reject')) {
+  const definitions = readRepoFile('web/lib/trezorMessages.ts');
+  if (
+    !definitions.includes('SOLANA_SIGN_MESSAGE_TYPE = 906') ||
+    !definitions.includes('SOLANA_MESSAGE_SIGNATURE_TYPE = 907') ||
+    !definitions.includes("type: 'SolanaOffchainMessageV1'") ||
+    !definitions.includes('signed_data')
+  ) {
     addError(
-      'web/components/SessionKeySetupModal.tsx',
-      'Session key setup must warn that most dApps will reject delegated signatures.'
+      'web/lib/trezorMessages.ts',
+      'Protobuf patch must match stable firmware OCMS v1 messages 906/907.'
+    );
+  }
+  const connect = readRepoFile('web/lib/trezorConnect.ts');
+  if (!connect.includes('addStableSolanaMessageDefinitions')) {
+    addError(
+      'web/lib/trezorConnect.ts',
+      'WebUSB transport must initialize with the stable Solana message definitions.'
     );
   }
 } catch (error) {
-  // File may not exist yet
+  addError('web/lib/trezorMessages.ts', 'Missing stable firmware protobuf patch.');
+}
+
+try {
+  const request = readRepoFile('web/lib/walletConnectSolanaMessage.ts');
+  if (!request.includes('decodeWalletConnectMessage')) {
+    addError(
+      'web/lib/walletConnectSolanaMessage.ts',
+      'WalletConnect message requests must use the strict base58 decoder.'
+    );
+  }
+  if (!request.includes('sessionWalletAddress !== signerAddress')) {
+    addError(
+      'web/lib/walletConnectSolanaMessage.ts',
+      'WalletConnect signer must match the address approved for the session.'
+    );
+  }
+  if (!request.includes('accounts.find')) {
+    addError(
+      'web/lib/walletConnectSolanaMessage.ts',
+      'Message signer must resolve to an enumerated Trezor derivation path.'
+    );
+  }
+} catch (error) {
+  addError(
+    'web/lib/walletConnectSolanaMessage.ts',
+    'Missing WalletConnect message validation.'
+  );
+}
+
+try {
+  const codec = readRepoFile('web/lib/solanaOffchainMessage.ts');
+  if (!codec.includes('bs58.decode(encoded)')) {
+    addError(
+      'web/lib/solanaOffchainMessage.ts',
+      'WalletConnect solana_signMessage payloads must be decoded as base58.'
+    );
+  }
+  if (!codec.includes("TextDecoder('utf-8', { fatal: true })")) {
+    addError(
+      'web/lib/solanaOffchainMessage.ts',
+      'Stable firmware string messages require strict UTF-8 validation.'
+    );
+  }
+} catch (error) {
+  addError('web/lib/solanaOffchainMessage.ts', 'Missing OCMS v1 codec.');
+}
+
+try {
+  const verifier = readRepoFile('web/lib/solanaMessageSigning.ts');
+  if (!verifier.includes('equalBytes(signedDataBytes, expected)')) {
+    addError(
+      'web/lib/solanaMessageSigning.ts',
+      'Verify firmware signed_data equals the locally serialized OCMS bytes.'
+    );
+  }
+  if (!verifier.includes('nacl.sign.detached.verify')) {
+    addError(
+      'web/lib/solanaMessageSigning.ts',
+      'Verify the Trezor Ed25519 signature locally before responding.'
+    );
+  }
+} catch (error) {
+  addError('web/lib/solanaMessageSigning.ts', 'Missing OCMS result verifier.');
+}
+
+try {
+  const hardwarePage = readRepoFile(
+    'web/app/trezor-usb/trezor-usb-client.tsx'
+  );
+  if (
+    !hardwarePage.includes('Test OCMS v1 Signing') ||
+    !hardwarePage.includes('verifyTrezorSolanaMessageResult')
+  ) {
+    addError(
+      'web/app/trezor-usb/trezor-usb-client.tsx',
+      'Physical-device page must expose an OCMS v1 signing and verification check.'
+    );
+  }
+} catch (error) {
+  addError(
+    'web/app/trezor-usb/trezor-usb-client.tsx',
+    'Missing physical OCMS signing check.'
+  );
+}
+
+const ocmsUnitTests = [
+  'web/lib/solanaOffchainMessage.test.ts',
+  'web/lib/trezorMessages.test.ts',
+  'web/lib/solanaMessageSigning.test.ts',
+  'web/lib/walletConnectSolanaMessage.test.ts'
+];
+for (const file of ocmsUnitTests) {
+  if (!fileExists(file)) {
+    addError(file, 'Missing stable physical Trezor regression tests.');
+  }
 }
 
 // Re-walk to run introspection lints

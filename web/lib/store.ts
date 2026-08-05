@@ -56,6 +56,11 @@ interface PendingRequest {
   rawBytes?: Uint8Array;
   messageBytes: Uint8Array;
   humanMessage?: string;
+  messageText?: string;
+  messageSignerAddress?: string;
+  messageDerivationPath?: string;
+  expectedSignedData?: Uint8Array;
+  messageProtocol?: 'ocms-v1';
   sendAfterSign?: boolean;
 }
 
@@ -68,13 +73,6 @@ interface WCEventLogEntry {
   topic?: string;
   details: string;
   rawParams?: string;
-}
-
-interface SessionKeyInfo {
-  publicKey: string;
-  authority: string;
-  expiresAt: number;
-  hasAttestation: boolean;
 }
 
 interface AppState {
@@ -98,7 +96,6 @@ interface AppState {
   statusMessage: string | null;
   debugLogs: string[];
   wcEventLog: WCEventLogEntry[];
-  sessionKey: SessionKeyInfo | null;
 
   setTrezorConnected: (connected: boolean) => void;
   setTrezorDeviceInfo: (info: DeviceInfo | null) => void;
@@ -127,7 +124,6 @@ interface AppState {
   clearDebugLog: () => void;
   addWcEvent: (event: Omit<WCEventLogEntry, 'id' | 'timestamp'>) => void;
   clearWcEventLog: () => void;
-  setSessionKey: (key: SessionKeyInfo | null) => void;
 }
 
 function normalizeAccount(account: SolanaAccount): SolanaAccount {
@@ -162,7 +158,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
   statusMessage: null,
   debugLogs: [],
   wcEventLog: [],
-  sessionKey: null,
 
   setTrezorConnected: (connected) => set({ trezorConnected: connected }),
   setTrezorDeviceInfo: (info) => set({ trezorDeviceInfo: info }),
@@ -285,6 +280,5 @@ export const useAppStore = create<AppState>()((set, get) => ({
       const next = [entry, ...state.wcEventLog].slice(0, 100); // Keep last 100 events
       return { wcEventLog: next };
     }),
-  clearWcEventLog: () => set({ wcEventLog: [] }),
-  setSessionKey: (key) => set({ sessionKey: key })
+  clearWcEventLog: () => set({ wcEventLog: [] })
 }));

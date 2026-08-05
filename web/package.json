@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
+    "test:unit": "vitest run",
     "test": "node ./tests/run-tests.js",
     "test:emulator": "node ./tests/run-tests.js",
     "test:real": "REAL_TREZOR=1 REAL_TREZOR_ALLOW_PROMPT=1 node ./tests/run-tests.js"
@@ -37,10 +38,12 @@
     "@types/react-dom": "^18.2.0",
     "@types/ws": "^8.5.10",
     "autoprefixer": "^10.4.0",
-    "eslint": "^9.39.2",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "^14.2.35",
     "postcss": "^8.4.0",
     "tailwindcss": "^3.4.0",
     "typescript": "^5.4.0",
+    "vitest": "^2.1.9",
     "ws": "^8.16.0"
   }
 }

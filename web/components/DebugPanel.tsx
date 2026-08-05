@@ -25,7 +25,7 @@ export function DebugPanel() {
     if (Array.isArray(buffer) && buffer.length && debugLogs.length === 0) {
       buffer.forEach((line: string) => appendDebugLog(line));
     }
-  }, [appendDebugLog]);
+  }, [appendDebugLog, debugLogs.length]);
 
   useEffect(() => {
     appendDebugLog(

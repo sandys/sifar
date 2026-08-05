@@ -2,6 +2,7 @@
 
 import { Buffer } from 'buffer';
 import type { Descriptor, Session, WebUsbTransport } from '@trezor/transport';
+import { addStableSolanaMessageDefinitions } from './trezorMessages';
 
 type ConnectResult<T> =
   | { success: true; payload: T }
@@ -133,10 +134,9 @@ class TrezorConnectLike {
     const transportModule = await import(
       '@trezor/transport/lib/transports/webusb.browser'
     );
-    const messages = (await import('@trezor/protobuf/messages.json')).default as Record<
-      string,
-      any
-    >;
+    const baseMessages = (await import('@trezor/protobuf/messages.json'))
+      .default as Record<string, any>;
+    const messages = addStableSolanaMessageDefinitions(baseMessages);
 
     this.transport = new transportModule.WebUsbTransport({
       messages,
@@ -249,6 +249,49 @@ class TrezorConnectLike {
         const signatureHex = response.message.signature;
         this.log('Signature hex length:', signatureHex.length, '(expected 128)');
         return { success: true, payload: { signature: signatureHex } };
+      } catch (err: any) {
+        return { success: false, payload: { error: err.message || 'Failed' } };
+      }
+    });
+  }
+
+  async solanaSignMessage(params: {
+    path: string;
+    message: string;
+    signers: string[];
+    chunkify?: boolean;
+  }): Promise<ConnectResult<{ signature: string; signedData: string }>> {
+    return this.enqueue(async () => {
+      try {
+        const response = await this.callWithUi('SolanaSignMessage', {
+          address_n: parsePath(params.path),
+          chunkify: params.chunkify ?? true,
+          message: {
+            message: params.message,
+            signers: params.signers
+          }
+        });
+
+        if (response.type !== 'SolanaMessageSignature') {
+          throw new Error(`Unexpected response: ${response.type}`);
+        }
+
+        const signatureHex = response.message.signature;
+        const signedDataHex = response.message.signed_data;
+        if (typeof signatureHex !== 'string' || signatureHex.length !== 128) {
+          throw new Error('Trezor returned an invalid Solana message signature');
+        }
+        if (typeof signedDataHex !== 'string' || signedDataHex.length === 0) {
+          throw new Error(
+            'Trezor firmware did not return OCMS v1 signed data. Update to the latest stable firmware.'
+          );
+        }
+        this.log('Message signature hex length:', signatureHex.length);
+        this.log('OCMS v1 signed data bytes:', signedDataHex.length / 2);
+        return {
+          success: true,
+          payload: { signature: signatureHex, signedData: signedDataHex }
+        };
       } catch (err: any) {
         return { success: false, payload: { error: err.message || 'Failed' } };
       }

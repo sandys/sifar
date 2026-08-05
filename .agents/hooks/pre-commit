@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# agents-doc-sync — keeps AGENTS.md/CLAUDE.md (.agents/REPO_GUIDE.md) and the
+# skills tree in lockstep with the code.
+#
+#   bash .agents/hooks/pre-commit --install   wire into this clone (idempotent)
+#   <run by git pre-commit>                   lint docs; block substantial commits that skip .agents/
+#   BASE=origin/main bash .agents/hooks/pre-commit   CI mode: check the range BASE...HEAD
+#
+# Escape hatch for genuinely doc-neutral changes:  AGENTS_SKIP_DOC_SYNC=1 git commit ...
+# Tunables: AGENTS_DOC_SYNC_MAX_FILES (default 10), AGENTS_DOC_SYNC_MAX_LINES (default 300)
+set -u
+
+cd "$(git rev-parse --show-toplevel)" || exit 0
+SELF=".agents/hooks/pre-commit"
+TAG="[agents-doc-sync]"
+
+# ------------------------------------------------------------------ --install
+if [ "${1:-}" = "--install" ]; then
+  if [ -f .pre-commit-config.yaml ]; then
+    cat <<EOF
+$TAG pre-commit framework detected. Add this to .pre-commit-config.yaml:
+  - repo: local
+    hooks:
+      - id: agents-doc-sync
+        name: agents doc sync
+        entry: $SELF
+        language: system
+        pass_filenames: false
+        always_run: true
+EOF
+    exit 0
+  fi
+  if [ -d .husky ]; then
+    if [ -f .husky/pre-commit ] && grep -q agents-doc-sync .husky/pre-commit; then
+      echo "$TAG already wired into .husky/pre-commit"
+    else
+      printf '\nbash %s || exit 1  # agents-doc-sync\n' "$SELF" >> .husky/pre-commit
+      echo "$TAG appended to .husky/pre-commit"
+    fi
+    exit 0
+  fi
+  HOOK="$(git rev-parse --git-path hooks)/pre-commit"
+  if [ -f "$HOOK" ]; then
+    if grep -q agents-doc-sync "$HOOK"; then
+      echo "$TAG already wired into $HOOK"
+    else
+      printf '\nbash %s || exit 1  # agents-doc-sync\n' "$SELF" >> "$HOOK"
+      echo "$TAG appended to existing $HOOK"
+    fi
+  else
+    printf '#!/usr/bin/env bash\nbash %s || exit 1  # agents-doc-sync\n' "$SELF" > "$HOOK"
+    chmod +x "$HOOK"
+    echo "$TAG installed $HOOK"
+  fi
+  echo "$TAG note: plain git hooks are per-clone; each teammate runs: bash $SELF --install"
+  exit 0
+fi
+
+# ------------------------------------------------------------ what changed?
+if [ -n "${BASE:-}" ]; then
+  CMP_REF="$BASE"
+  FILES="$(git diff --name-only "$BASE...HEAD")"
+  NUMSTAT="$(git diff --numstat "$BASE...HEAD")"
+else
+  git rev-parse -q --verify HEAD >/dev/null || exit 0   # first commit: nothing to compare
+  CMP_REF="HEAD"
+  FILES="$(git diff --cached --name-only)"
+  NUMSTAT="$(git diff --cached --numstat)"
+fi
+[ -z "$FILES" ] && exit 0
+
+# ------------------------------------------- lint the docs on every commit
+LINT_FAIL=0
+for f in AGENTS.md CLAUDE.md; do
+  [ -e "$f" ] && [ ! -L "$f" ] && ! grep -qiE '@generated|do not edit|REPO_GUIDE' "$f" \
+    && echo "$TAG warn: $f is a regular file with no pointer to .agents/REPO_GUIDE.md - symlink it, or add a one-line reference (coexist mode)"
+done
+for s in .agents/skills/*/SKILL.md; do
+  [ -e "$s" ] || continue
+  d="$(basename "$(dirname "$s")")"
+  if ! head -1 "$s" | grep -qx -- '---'; then
+    echo "$TAG $s: missing YAML frontmatter ('---' on line 1)"; LINT_FAIL=1; continue
+  fi
+  printf '%s' "$d" | grep -qE '^[a-z0-9]+(-[a-z0-9]+)*$' || { echo "$TAG $s: directory name '$d' must be lowercase a-z, 0-9, single hyphens"; LINT_FAIL=1; }
+  grep -qE "^name: *$d *$" "$s" || { echo "$TAG $s: frontmatter 'name' must be exactly '$d' (same as the directory)"; LINT_FAIL=1; }
+  grep -qE '^description: *[^ ]' "$s" || { echo "$TAG $s: frontmatter 'description' is required - it is how agents decide to use the skill"; LINT_FAIL=1; }
+done
+SECRET_RE='ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|eyJ[A-Za-z0-9_-]{20,}\.eyJ'
+if git diff --cached --name-only -- .agents 2>/dev/null | grep -q . && \
+   git diff --cached -- .agents | grep -qE "$SECRET_RE"; then
+  echo "$TAG BLOCKED: staged .agents/ changes contain what looks like a secret - .agents/ is committed and shared."
+  exit 1
+fi
+[ "$LINT_FAIL" = 1 ] && { echo "$TAG BLOCKED: fix the skill issues above, then commit again."; exit 1; }
+
+[ "${AGENTS_SKIP_DOC_SYNC:-0}" = "1" ] && exit 0
+
+# Docs-only change (everything under .agents/ or markdown): nothing to enforce.
+DOCS_ONLY=1
+while IFS= read -r f; do
+  case "$f" in
+    .agents/*|*.md|*.MD|*.markdown) ;;
+    *) DOCS_ONLY=0; break ;;
+  esac
+done <<EOF
+$FILES
+EOF
+[ "$DOCS_ONLY" = "1" ] && exit 0
+
+# If .agents/ moves with the code, we're satisfied.
+while IFS= read -r f; do
+  case "$f" in .agents/*) exit 0 ;; esac
+done <<EOF
+$FILES
+EOF
+
+# ------------------------------------------- is this change substantial?
+REASONS=""
+
+KEY='(^|/)(package\.json|pyproject\.toml|setup\.(py|cfg)|requirements[^/]*\.txt|go\.mod|Cargo\.toml|Gemfile|composer\.json|pom\.xml|build\.gradle[^/]*|Dockerfile[^/]*|docker-compose[^/]*|Makefile|justfile|Taskfile\.ya?ml|\.env\.example|CMakeLists\.txt)$|^\.github/workflows/|^\.gitlab-ci\.yml$|(^|/)(migrations|db/schema)(/|$)'
+KEY_LIST="$(printf '%s\n' "$FILES" | grep -E "$KEY" || true)"
+[ -n "$KEY_LIST" ] && REASONS="$REASONS
+  - build/deps/CI/schema files changed: $(printf '%s' "$KEY_LIST" | head -3 | tr '\n' ' ')"
+
+NEW_TOP=""
+for t in $(printf '%s\n' "$FILES" | grep '/' | sed 's#/.*##' | sort -u); do
+  git cat-file -e "$CMP_REF:$t" 2>/dev/null || NEW_TOP="$NEW_TOP $t/"
+done
+[ -n "$NEW_TOP" ] && REASONS="$REASONS
+  - new top-level director(ies):$NEW_TOP"
+
+N_FILES="$(printf '%s\n' "$FILES" | grep -c . || true)"
+N_LINES="$(printf '%s\n' "$NUMSTAT" | awk '{a += $1 + $2} END {print a + 0}')"
+[ "$N_FILES" -ge "${AGENTS_DOC_SYNC_MAX_FILES:-10}" ] && REASONS="$REASONS
+  - large change: $N_FILES files"
+[ "$N_LINES" -ge "${AGENTS_DOC_SYNC_MAX_LINES:-300}" ] && REASONS="$REASONS
+  - large change: $N_LINES lines"
+
+[ -z "$REASONS" ] && exit 0
+
+cat <<EOF
+$TAG BLOCKED: this change looks substantial, but nothing under .agents/ was updated.
+Why it tripped:$REASONS
+
+Fix (pick one):
+  1. Have your agent run the sync skill, then commit again:
+       Claude Code: /syncing-docs-before-commit    Codex: \$syncing-docs-before-commit
+       (or just tell it: "sync the docs with this change")
+  2. Genuinely nothing to document?  AGENTS_SKIP_DOC_SYNC=1 git commit ...
+
+AGENTS.md / CLAUDE.md and the skills tree must describe the repo as of this commit.
+EOF
+exit 1

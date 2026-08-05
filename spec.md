@@ -70,6 +70,18 @@ Desktop dApp (jup.ag) ── WalletConnect ──> Vault Bridge (mobile web)
   - `ButtonRequest` → show “Confirm on device” → `ButtonAck`
 - No Trezor-hosted iframe/popup is used anywhere.
 
+### 5.1 Stable Solana Off-Chain Message Signing
+
+- Target stable Trezor Core firmware `2.12.4+` and the OCMS v1 protocol.
+- Extend the bundled protobuf JSON locally with the stable firmware schema:
+  - `SolanaSignMessage` wire ID `906`; `message` is a required `SolanaOffchainMessageV1` at field `4`.
+  - `SolanaMessageSignature` wire ID `907`; response contains `signature` and `signed_data`.
+- Decode WalletConnect `solana_signMessage.params.message` as base58 and require valid UTF-8 text.
+- Require `params.pubkey` to match the WalletConnect session address and an account/path enumerated from the connected Trezor.
+- Reconstruct canonical OCMS v1 bytes locally, compare them byte-for-byte with firmware `signed_data`, and verify the Ed25519 signature before responding.
+- Do not use transaction signing or software/session keys as a message-signing fallback.
+- Return `signature` plus `signedMessage` and `messageVersion: 1` extension fields. Warn that legacy dApps which verify only the raw WalletConnect message are not OCMS-compatible.
+
 ## 6. Stateless Design (Mandatory)
 
 The app **must not** store any state across page reloads. No persistence APIs:
@@ -85,6 +97,11 @@ Every visit begins fresh:
 3. Scan QR
 4. Sign
 5. Close tab = everything gone
+
+**Current implementation gap:** URL-state restoration still passes temporary
+hints through `sessionStorage`, and the WalletConnect SDK maintains its own
+storage. V1 does not satisfy this section until both persistence paths are
+removed or replaced with a truly in-memory flow.
 
 ## 7. Project Structure (web/)
 
@@ -178,10 +195,11 @@ NEXT_PUBLIC_SOLANA_RPC=https://api.mainnet-beta.solana.com
 1. Android + Chrome only
 2. WebUSB requires a manual device chooser prompt on first connect
 3. Custom UI must handle PIN/passphrase/confirm flows
-4. Single active account for signing (list the first few accounts for selection)
+4. One selected account per WalletConnect session; enumerate supported Trezor account paths eagerly
 5. Static token registry
 6. No EVM support in V1
 7. No persistence by design
+8. WalletConnect raw-message verification is not equivalent to OCMS v1 domain-separated signing; legacy dApps may reject message signatures
 
 ## 13. Success Criteria
 
