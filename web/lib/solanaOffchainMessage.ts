@@ -186,6 +186,5 @@ export function parseSolanaOffchainMessageV1(
 export {
   MAX_WALLETCONNECT_MESSAGE_BYTES,
   OCMS_V1_VERSION,
-  SIGNING_DOMAIN,
-  SOLANA_PUBLIC_KEY_BYTES
+  SIGNING_DOMAIN
 };

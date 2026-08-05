@@ -17,6 +17,17 @@ const nextConfig = {
     };
     return config;
   },
+  async redirects() {
+    // The camera-QR flow that used to live at / was removed; /trezor-usb is the
+    // only flow. Redirect rather than 404 so existing links still land.
+    return [
+      {
+        source: '/',
+        destination: '/trezor-usb',
+        permanent: false
+      }
+    ];
+  },
   async headers() {
     return [
       {

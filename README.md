@@ -61,10 +61,8 @@ web/
 ├── app/
 │   ├── api/solana/route.ts    # RPC proxy with fallbacks
 │   ├── layout.tsx             # Root layout
-│   ├── page.tsx               # Main WalletConnect page
 │   ├── providers.tsx          # WC + Trezor event wiring + URL state restore
-│   ├── trezor-usb/            # Direct WebUSB page
-│   └── trezor-test/           # Test harness
+│   └── trezor-usb/            # Direct WebUSB page (/ redirects here)
 ├── components/
 │   ├── WalletConnectModal.tsx # Session + signing UI
 │   ├── WalletDisplay.tsx      # Account list + pagination

@@ -18,7 +18,7 @@ import { prepareWalletConnectSolanaMessage } from './walletConnectSolanaMessage'
  * Convert hex signature to 64-byte Buffer.
  * Trezor returns signature as hex string (128 chars = 64 bytes).
  */
-export function normalizeSignature(hexSig: string): Buffer {
+function normalizeSignature(hexSig: string): Buffer {
   console.log('[Signing] Signature hex:', {
     length: hexSig.length,
     expectedHexLength: 128,

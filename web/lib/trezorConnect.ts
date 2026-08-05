@@ -615,5 +615,4 @@ class TrezorConnectLike {
 const TrezorConnect = new TrezorConnectLike();
 
 export default TrezorConnect;
-export { parsePath };
 export type { UiRequestPayload, UiResponse, ConnectResult };

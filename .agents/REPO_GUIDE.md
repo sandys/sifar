@@ -6,10 +6,10 @@
 
 ## What this is
 Sifar bridges Solana dApps over WalletConnect v2 to a Trezor hardware wallet.
-The current focus is a Next.js mobile web app using direct WebUSB with no
-Trezor-hosted popup, iframe, or standalone Bridge; a React Native prototype
-coexists under `mobile/`. Private keys never leave the device, and signing must
-fail closed unless the requested signer and returned signature are verified.
+It is a Next.js web app using direct WebUSB with no Trezor-hosted popup,
+iframe, or standalone Bridge. `web/` is the whole product. Private keys never
+leave the device, and signing must fail closed unless the requested signer and
+returned signature are verified.
 
 ## Commands
 - Web setup/run (Docker only): `docker compose up --build -d`; open `http://localhost:3001/trezor-usb`.
@@ -17,9 +17,6 @@ fail closed unless the requested signer and returned signature are verified.
 - Web test all: `docker compose exec web npm test` — single unit file: `docker compose exec web npx vitest run lib/solanaOffchainMessage.test.ts`.
 - Web lint/typecheck: `docker compose exec web node tests/lint-tests.js && docker compose exec web npm run lint && docker compose exec web npm run typecheck`.
 - Web logs/stop: `docker compose logs -f web` / `docker compose down`.
-- Mobile setup/test: `cd mobile && npm ci && npm test -- --ci --reporters=default --watchAll=false`.
-- Mobile run: from `mobile/`, use `npm run android`, `npm run ios`, or `npm start` in a configured React Native environment.
-- Mobile native setup/release: `cd mobile/ios && bundle exec pod install`; Android release: `cd mobile/android && ./gradlew assembleRelease`.
 - Doc-sync hook (once per clone): `bash .agents/hooks/pre-commit --install`.
 
 ## Architecture
@@ -32,16 +29,15 @@ fail closed unless the requested signer and returned signature are verified.
 - `web/lib/solanaOffchainMessage.ts` and `solanaMessageSigning.ts` serialize OCMS v1 and verify returned bytes and Ed25519 signatures.
 - `web/lib/store.ts` is Zustand UI/runtime state; `walletconnect.ts`, `solana.ts`, and `urlState.ts` own external/session data flows.
 - `web/tests/lint-tests.js`, co-located Vitest files, and Playwright cover regressions; real WebUSB tests are opt-in and interactive.
-- `mobile/` is the parallel React Native app (`src/`, `__tests__/`, `android/`, `ios/`); `.github/workflows/android.yml` installs Node 20 dependencies, tests, and builds its debug APK.
+- `/trezor-usb` is the only flow; `/` redirects to it. There is no CI workflow.
 
 ## Conventions
 - Use TypeScript, 2-space indentation, function components, Zustand selectors, and browser-global guards in client components.
 - Name components/services and types in `PascalCase`, hooks/functions/variables in `camelCase`, and constants in `UPPER_SNAKE_CASE`.
 - Co-locate `*.test.ts(x)` where practical; add a custom guard to `web/tests/lint-tests.js` for recurring architectural regressions.
-- For mobile services, aim for at least 80% coverage and prioritize malformed data, chain/signer confusion, disconnect, and lifecycle cases.
 - Run custom lints, ESLint, typecheck, unit/full tests, and build before reporting web work complete.
 - Use Conventional Commit prefixes (`feat:`, `fix:`, `test:`, `docs:`, `refactor:`, `chore:`); the human decides when to commit.
-- PRs should state platform impact and affirm no private-key storage, no transaction modification, hardware-only signing, and chain validation.
+- PRs should affirm no private-key storage, no transaction modification, hardware-only signing, and chain validation.
 
 ## Gotchas & environment notes
 - WebUSB requires Chromium, a secure context/localhost, a user gesture for the chooser, and an unlocked device. WSL/Docker serves the site; the browser owns USB and physical confirmations. Do not invoke Windows host commands such as `powershell.exe` from this repo workflow.
@@ -83,5 +79,4 @@ fail closed unless the requested signer and returned signature are verified.
 - Never store or log seeds, private keys, passphrases, WalletConnect symmetric keys, RPC credentials, or customer data.
 - Never add software/session-key signing fallback, modify a dApp transaction, bypass chain/signer validation, or respond before local verification.
 - Never add a Trezor-hosted UI or non-WebUSB transport to the web flow without explicit architectural approval.
-- Never edit generated `mobile/src/services/hardware/trezor/protos/descriptor.json`; change vendored protos and run `npm run gen:trezor-descriptor`.
 - Never discard unrelated worktree changes, run destructive Git commands, commit, push, or amend unless the human explicitly asks.

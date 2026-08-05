@@ -162,7 +162,6 @@ const signatureHex = response.message.signature;
 | File | Must NOT contain |
 |------|------------------|
 | `trezor-usb-client.tsx` | `Promise.all` with `getAllBalances` (causes 429s) |
-| Pages | `TransactionPreview`, `SigningFlow` (signing is in modal) |
 | `lib/signing.ts` | `sigBytes.length === 128` with `.slice()` |
 
 ### UI/UX Rules

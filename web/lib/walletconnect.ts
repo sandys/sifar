@@ -97,7 +97,7 @@ export async function initWalletConnect(): Promise<IWeb3Wallet> {
   }
 }
 
-export function getWeb3Wallet(): IWeb3Wallet {
+function getWeb3Wallet(): IWeb3Wallet {
   if (!web3wallet) throw new Error('WalletConnect not initialized');
   return web3wallet;
 }
@@ -298,10 +298,6 @@ export async function rejectSessionRequest(
       }
     }
   });
-}
-
-export function getActiveSessions() {
-  return getWeb3Wallet().getActiveSessions();
 }
 
 export async function disconnectSession(topic: string): Promise<void> {

@@ -82,13 +82,13 @@ function base64urlDecode(str: string): string {
 }
 
 /** Encode state object to base64url string */
-export function encodeUrlState(state: UrlEncodedState): string {
+function encodeUrlState(state: UrlEncodedState): string {
   const json = JSON.stringify(state);
   return base64urlEncode(json);
 }
 
 /** Decode base64url string to state object, returns null if invalid */
-export function decodeUrlState(encoded: string): RestoredState | null {
+function decodeUrlState(encoded: string): RestoredState | null {
   try {
     const json = base64urlDecode(encoded);
     const parsed = JSON.parse(json) as UrlEncodedState;

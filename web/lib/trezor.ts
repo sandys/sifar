@@ -12,7 +12,7 @@ function ensureBuffer() {
   }
 }
 
-export async function initTrezor() {
+async function initTrezor() {
   // Memoize the in-flight init. `initialized = true` only ran after the await,
   // so two concurrent callers (handleConnect fires getTrezorDeviceInfo without
   // awaiting it, then calls getSolanaAddress) both saw false and each built a
@@ -64,15 +64,6 @@ export async function getSolanaAddress(
   };
 }
 
-export async function getSolanaAddresses(count = 3) {
-  const accounts: Array<{ address: string; path: string }> = [];
-  for (let i = 0; i < count; i += 1) {
-    const { address, path } = await getSolanaAddress(i, i === 0);
-    accounts.push({ address, path });
-  }
-  return accounts;
-}
-
 export async function signSolanaTransaction(
   serializedTx: Uint8Array,
   derivationPath: string
@@ -119,16 +110,6 @@ export async function signSolanaMessage(
     signature: result.payload.signature,
     signedData: result.payload.signedData
   };
-}
-
-export async function checkTrezorAvailable(): Promise<boolean> {
-  try {
-    await initTrezor();
-    const result = await TrezorConnect.getFeatures();
-    return result.success;
-  } catch {
-    return false;
-  }
 }
 
 export async function getTrezorDeviceInfo(): Promise<{

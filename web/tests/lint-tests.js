@@ -308,7 +308,7 @@ try {
 }
 
 // Ensure pages do not use redundant TransactionPreview/SigningFlow (signing is in WalletConnectModal).
-const pageFiles = ['web/app/page.tsx', 'web/app/trezor-usb/page.tsx'];
+const pageFiles = ['web/app/trezor-usb/page.tsx'];
 for (const pageFile of pageFiles) {
   try {
     const pageContent = readRepoFile(pageFile);

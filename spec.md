@@ -33,7 +33,7 @@ Desktop dApp (jup.ag) ── WalletConnect ──> Vault Bridge (mobile web)
  - @trezor/protobuf (messages.json)
 - @walletconnect/core + @walletconnect/web3wallet
 - @solana/web3.js v1 + @solana/spl-token
-- html5-qrcode
+- jsqr (QR decoding from pasted images)
 - zustand (no persist middleware)
 - bs58
 
@@ -116,15 +116,12 @@ web/
 │   ├── globals.css
 │   └── providers.tsx
 ├── components/
-│   ├── Scanner.tsx
-│   ├── TrezorConnect.tsx
+│   ├── WalletConnectModal.tsx
+│   ├── WalletDisplay.tsx
 │   ├── TrezorPrompt.tsx
 │   ├── SessionApproval.tsx
-│   ├── TransactionPreview.tsx
-│   ├── SigningFlow.tsx
-│   ├── WalletDisplay.tsx
-│   ├── StatusBar.tsx
-│   ├── StatusToast.tsx
+│   ├── DebugPanel.tsx
+│   ├── LoadingOverlay.tsx
 │   └── ui/
 │       ├── Button.tsx
 │       ├── Card.tsx
@@ -145,8 +142,6 @@ web/
 ├── tsconfig.json
 └── package.json
 ```
-
-Note: The `mobile/` directory remains a separate React Native codebase.
 
 ## 8. Security Requirements
 

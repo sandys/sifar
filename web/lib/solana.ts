@@ -129,7 +129,7 @@ const TOKEN_REGISTRY: Record<
   }
 };
 
-export async function getSolBalance(address: string): Promise<number> {
+async function getSolBalance(address: string): Promise<number> {
   return withRpc(async (connection) => {
     const pubkey = new PublicKey(address);
     const lamports = await connection.getBalance(pubkey);
@@ -137,7 +137,7 @@ export async function getSolBalance(address: string): Promise<number> {
   });
 }
 
-export async function getSPLTokenBalances(address: string): Promise<
+async function getSPLTokenBalances(address: string): Promise<
   Array<{
     mint: string;
     symbol: string;
