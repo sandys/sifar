@@ -108,18 +108,29 @@ new Connection('/api/solana')
 
 ### Signing Account Mismatch (CRITICAL)
 
-Never use `store.solanaDerivationPath` directly for signing. Extract signer from transaction:
+Never use `store.solanaDerivationPath` for signing, and never look a signer up
+across all enumerated accounts. Use `resolveTransactionSigner` in
+`lib/signing.ts`, which derives the signer from the transaction and requires it
+to be the address the requesting session was approved for.
 
 ```typescript
-// BAD - may sign with wrong account
-const path = store.solanaDerivationPath;
-signSolanaTransaction(path, ...);
+// BAD - signs with whatever the UI has selected, into key 0's slot
+signSolanaTransaction(messageBytes, store.solanaDerivationPath);
+vtx.addSignature(vtx.message.staticAccountKeys[0], sigBytes);
 
-// GOOD - derive from transaction signer
-const signerAddress = tx.message.staticAccountKeys[0].toBase58();
-const matchingAccount = store.solanaAccounts.find(a => a.address === signerAddress);
-signSolanaTransaction(matchingAccount.path, ...);
+// GOOD - signer comes from the transaction, bound to the session
+const { account, signerKey } = resolveTransactionSigner(
+  rawBytes,
+  requireSessionWalletAddress(topic)
+);
+const { signature } = await signSolanaTransaction(messageBytes, account.path);
+vtx.addSignature(signerKey, sigBytes);   // the resolved key's slot, not [0]
 ```
+
+Scan every required-signature slot, not just index 0: the wallet may co-sign a
+transaction it does not pay the fee for. And branch on the local verification —
+`addSignature`/`serialize` do not check signatures, so an invalid one would
+otherwise be returned to the dApp.
 
 ### Trezor Signature Format
 
@@ -142,7 +153,7 @@ const signatureHex = response.message.signature;
 | `lib/trezorConnect.ts` | `ui-error`, `hadError`, `retriedAfterFeatures`, `signatureHex` |
 | `components/TrezorPrompt.tsx` | `ui-error` |
 | `lib/walletconnect.ts` | `buildApprovedNamespaces` |
-| `lib/signing.ts` | `normalizeSignature`, `staticAccountKeys[0]`, `solanaAccounts.find` |
+| `lib/signing.ts` | `normalizeSignature`, `staticAccountKeys`, `solanaAccounts.find`, `requireSessionWalletAddress`, `if (!isValid)` |
 | `components/WalletConnectModal.tsx` | `solana_signMessage`, `Stable firmware OCMS v1`, legacy raw-message compatibility warning |
 | `lib/store.ts` | `NEXT_PUBLIC_WC_PROJECT_ID`, `activeSessions:` |
 
@@ -181,6 +192,7 @@ const signatureHex = response.message.signature;
 docker-compose.yml → runs web/scripts/dev.sh
 web/scripts/dev.sh → runs npm ci if needed
 web/next.config.js → CSP must allow verify.walletconnect.org, pulse.walletconnect.org
+                    (connect-src AND frame-src; plus frame-ancestors 'none')
 web/types/jsqr.d.ts → type shim required
 ```
 

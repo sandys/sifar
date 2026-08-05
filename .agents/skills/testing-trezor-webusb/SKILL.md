@@ -100,11 +100,17 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
 
 - `Unexpected response: Features` can occur when firmware resets workflow
   state. The Connect-like loop retries once; repeated Features responses require
-  release/reconnect rather than treating them as a signature.
+  release/reconnect rather than treating them as a signature. `Initialize` and
+  `GetFeatures` are exempt because `Features` is their correct reply — if this
+  error appears on every connect, that exemption has regressed.
 - `missing required field message` on `SolanaSignMessage` is the OCMS v0/v1
   protobuf boundary: Core `2.12.1`-`2.12.3` required bytes field `2`, while
   `2.12.4+` requires nested v1 field `4`. Check the firmware shown by Sifar;
   do not guess from the updater saying the device is current.
+- A blank UI while the device waits on a PIN/passphrase prompt ("nothing
+  happens until I click Connect again") means the prompt was emitted and then
+  cleared. Look for `ui-close_window` immediately after `ui-request_passphrase`
+  in the debug log, or a duplicate transport from an unmemoized init.
 - `Forbidden key path` during address enumeration marks unsupported path range;
   it must stop background enumeration without replacing an active signing UI
   with an error prompt.

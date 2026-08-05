@@ -9,7 +9,27 @@ import {
 } from './walletConnectUri';
 
 let web3wallet: IWeb3Wallet | null = null;
+let initPromise: Promise<IWeb3Wallet> | null = null;
 let projectIdOverride: string | null = null;
+
+type WalletReadyListener = (wallet: IWeb3Wallet) => void;
+const walletReadyListeners = new Set<WalletReadyListener>();
+
+/**
+ * Run `listener` as soon as the Web3Wallet exists, and for every wallet created
+ * afterwards.
+ *
+ * Event handlers must not be tied to a single init call site: the wallet is
+ * created lazily by pairWithDApp when the user supplies a Project ID at runtime,
+ * and a wallet with no listeners silently swallows every proposal and request.
+ */
+export function onWalletConnectReady(listener: WalletReadyListener) {
+  walletReadyListeners.add(listener);
+  if (web3wallet) listener(web3wallet);
+  return () => {
+    walletReadyListeners.delete(listener);
+  };
+}
 
 function getProjectId() {
   const storeId =
@@ -34,26 +54,47 @@ export function hasWalletConnectProjectId() {
 
 export async function initWalletConnect(): Promise<IWeb3Wallet> {
   if (web3wallet) return web3wallet;
+  // Memoize the in-flight init: a slow relay handshake used to let a concurrent
+  // caller start a second Web3Wallet and orphan the first one's listeners.
+  if (initPromise) return initPromise;
+
   const projectId = getProjectId();
   if (!projectId) {
     throw new Error('Missing NEXT_PUBLIC_WC_PROJECT_ID');
   }
 
-  const core = new Core({
-    projectId
-  }) as any;
+  initPromise = (async () => {
+    const core = new Core({
+      projectId
+    }) as any;
 
-  web3wallet = await Web3Wallet.init({
-    core,
-    metadata: {
-      name: 'Vault Bridge',
-      description: 'Hardware-signed wallet powered by Trezor',
-      url: 'https://vaultbridge.io',
-      icons: ['https://vaultbridge.io/icon.png']
-    }
-  });
+    const wallet = await Web3Wallet.init({
+      core,
+      metadata: {
+        name: 'Sifar',
+        description: 'Hardware-signed wallet powered by Trezor',
+        url: 'https://vaultbridge.io',
+        icons: ['https://vaultbridge.io/icon.png']
+      }
+    });
 
-  return web3wallet;
+    web3wallet = wallet;
+    walletReadyListeners.forEach((listener) => {
+      try {
+        listener(wallet);
+      } catch (error) {
+        console.error('[WC] Wallet-ready listener failed:', error);
+      }
+    });
+    return wallet;
+  })();
+
+  try {
+    return await initPromise;
+  } catch (error) {
+    initPromise = null;
+    throw error;
+  }
 }
 
 export function getWeb3Wallet(): IWeb3Wallet {
@@ -265,6 +306,20 @@ export function getActiveSessions() {
 
 export async function disconnectSession(topic: string): Promise<void> {
   const wallet = getWeb3Wallet();
+
+  // The store can hold a session the SDK no longer has (expired, or deleted by
+  // the dApp while we were away). Calling disconnectSession on it throws
+  // "No matching key", which used to abort before the local cleanup and leave a
+  // row the user could never remove. Nothing to send in that case.
+  const sessions = wallet.getActiveSessions();
+  if (!sessions[topic]) {
+    console.warn(
+      '[WC] disconnectSession: no live session for topic, dropping locally only',
+      topic.substring(0, 16) + '...'
+    );
+    return;
+  }
+
   await wallet.disconnectSession({
     topic,
     reason: getSdkError('USER_DISCONNECTED')
@@ -274,23 +329,23 @@ export async function disconnectSession(topic: string): Promise<void> {
 export async function pingSession(topic: string): Promise<boolean> {
   const wallet = getWeb3Wallet();
   try {
-    console.log('[WC] Pinging session:', topic);
+    // Session topics and pairing topics live in separate keychains. Pinging the
+    // pairing store with a session topic always throws, so check which one this
+    // is instead of failing first and falling back.
+    const sessions = wallet.getActiveSessions();
+    if (sessions[topic]) {
+      console.log('[WC] Pinging session:', topic.substring(0, 16) + '...');
+      await wallet.engine.signClient.ping({ topic });
+      console.log('[WC] Session ping successful');
+      return true;
+    }
+
+    console.log('[WC] Pinging pairing:', topic.substring(0, 16) + '...');
     await wallet.core.pairing.ping({ topic });
-    console.log('[WC] Ping successful');
+    console.log('[WC] Pairing ping successful');
     return true;
   } catch (error) {
-    console.warn('[WC] Ping failed, trying session ping:', error);
-    try {
-      // Try pinging the session directly
-      const sessions = wallet.getActiveSessions();
-      if (sessions[topic]) {
-        await wallet.engine.signClient.ping({ topic });
-        console.log('[WC] Session ping successful');
-        return true;
-      }
-    } catch (sessionError) {
-      console.error('[WC] Session ping failed:', sessionError);
-    }
+    console.warn('[WC] Ping failed:', error);
     return false;
   }
 }

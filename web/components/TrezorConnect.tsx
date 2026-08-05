@@ -50,8 +50,10 @@ export function TrezorConnect() {
     setLoading(true);
     abortRef.current = false;
 
+    // Reads live state: the captured `loading` is always false at click time,
+    // so the old condition could never fire.
     timeoutRef.current = setTimeout(() => {
-      if (loading && !trezorConnected) {
+      if (!useAppStore.getState().trezorConnected) {
         setError('Connection timed out. Device may be unresponsive. Try unplugging and reconnecting.');
         handleDisconnect();
       }

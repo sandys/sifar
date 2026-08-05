@@ -4,7 +4,7 @@ import { Buffer } from 'buffer';
 import TrezorConnect from './trezorConnect';
 import { decodeSolanaPublicKey } from './solanaOffchainMessage';
 
-let initialized = false;
+let initPromise: Promise<void> | null = null;
 
 function ensureBuffer() {
   if (typeof globalThis.Buffer === 'undefined') {
@@ -13,10 +13,15 @@ function ensureBuffer() {
 }
 
 export async function initTrezor() {
-  if (initialized) return;
-  ensureBuffer();
+  // Memoize the in-flight init. `initialized = true` only ran after the await,
+  // so two concurrent callers (handleConnect fires getTrezorDeviceInfo without
+  // awaiting it, then calls getSolanaAddress) both saw false and each built a
+  // transport. The second overwrote the first while the first kept listening,
+  // which left the device talking to an orphaned transport.
+  if (initPromise) return initPromise;
 
-  await TrezorConnect.init({
+  ensureBuffer();
+  initPromise = TrezorConnect.init({
     manifest: {
       email: 'dev@vaultbridge.io',
       appUrl: 'https://vaultbridge.io'
@@ -24,7 +29,12 @@ export async function initTrezor() {
     debug: process.env.NODE_ENV === 'development'
   });
 
-  initialized = true;
+  try {
+    await initPromise;
+  } catch (error) {
+    initPromise = null;
+    throw error;
+  }
 }
 
 export async function requestWebUSBDevice() {
@@ -141,7 +151,7 @@ export async function getTrezorDeviceInfo(): Promise<{
 
 export async function disconnectTrezor(): Promise<void> {
   await TrezorConnect.dispose();
-  initialized = false;
+  initPromise = null;
 }
 
 class TrezorError extends Error {

@@ -9,6 +9,18 @@ type HardwareAccount = {
   path: string;
 };
 
+/**
+ * Characters @trezor/protobuf silently rewrites in string fields (it maps
+ * typographic quotes to ASCII before encoding).
+ *
+ * The device would therefore sign different bytes than the dApp asked for, and
+ * the local signed_data comparison would fail afterwards with an error that
+ * blames the firmware. Detect it here so the dApp gets an accurate rejection
+ * before anyone touches the device. Normalizing instead is not an option: this
+ * wallet never alters what it was asked to sign.
+ */
+const PROTOBUF_REWRITTEN_CHARS = /[‘’]/;
+
 type PreparedWalletConnectMessage = {
   messageBytes: Uint8Array;
   messageText: string;
@@ -43,6 +55,15 @@ export function prepareWalletConnectSolanaMessage(
 
   const { bytes: messageBytes, text: messageText } =
     decodeWalletConnectMessage(request.message);
+
+  if (PROTOBUF_REWRITTEN_CHARS.test(messageText)) {
+    throw new Error(
+      'Message contains a typographic quote (‘ or ’) that the Trezor ' +
+        'protobuf encoder rewrites to ASCII, so the device would sign different ' +
+        'bytes than requested. Ask the dApp to use a straight quote.'
+    );
+  }
+
   const signerPublicKey = decodeSolanaPublicKey(signerAddress);
   return {
     messageBytes,

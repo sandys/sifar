@@ -61,8 +61,10 @@ export function WalletConnectModal({
   const [busy, setBusy] = useState(false);
   const [projectIdInput, setProjectIdInput] = useState('');
   const [sessionStatus, setSessionStatus] = useState<Record<string, 'idle' | 'pinging' | 'ok' | 'error'>>({});
+  const [sessionError, setSessionError] = useState<Record<string, string>>({});
   const [relayStatus, setRelayStatus] = useState<'unknown' | 'connected' | 'disconnected' | 'reconnecting'>('unknown');
   const [signing, setSigning] = useState(false);
+  const [signingError, setSigningError] = useState<string | null>(null);
   const [eventLogOpen, setEventLogOpen] = useState(false);
   const [expandedEvents, setExpandedEvents] = useState<Set<string>>(() => new Set());
   const [addressCopied, setAddressCopied] = useState(false);
@@ -142,18 +144,28 @@ export function WalletConnectModal({
     }
   }, [signingRequestForWallet]);
 
-  // Reset transient state when modal opens
+  // Reset transient state when the modal opens or switches account.
+  // `account.address` matters: the modal instance is reused when the displayed
+  // account changes, so without it one account's stale error and half-typed URI
+  // carry over to the next.
   useEffect(() => {
     if (!open) return;
     setWcUri('');
     setError(null);
+    setSigningError(null);
     setBusy(false);
-    setProjectIdInput(wcProjectId || '');
     setStatus('');
     setSessionStatus({});
+    setSessionError({});
     // Check relay status
     setRelayStatus(getRelayConnectionState() as any);
-  }, [open, wcProjectId]);
+  }, [open, account?.address]);
+
+  // Keep the Project ID input in sync without wiping the rest of the form
+  // (saving an ID used to clear its own confirmation message).
+  useEffect(() => {
+    setProjectIdInput(wcProjectId || '');
+  }, [wcProjectId]);
 
   // Ping a session to check if it's still alive
   const handlePingSession = async (topic: string) => {
@@ -186,7 +198,7 @@ export function WalletConnectModal({
     const req = signingRequestForWallet;
     const session = sessionsForWallet.find((s) => s.topic === req.topic);
     setSigning(true);
-    setError(null);
+    setSigningError(null);
     try {
       switch (req.type) {
         case 'solana_signMessage':
@@ -220,7 +232,14 @@ export function WalletConnectModal({
         details: `Signing failed: ${err?.message || 'Unknown error'}`,
         rawParams: JSON.stringify({ requestId: req.requestId, type: req.type, error: err?.message }, null, 2)
       });
-      setError(err?.message || 'Signing failed.');
+      setSigningError(err?.message || 'Signing failed.');
+      // The dApp is still blocked on this id; tell it we failed rather than
+      // leaving it to time out.
+      try {
+        await rejectCurrentRequest();
+      } catch (rejectErr) {
+        console.warn('[Modal] Could not reject after signing failure:', rejectErr);
+      }
     } finally {
       setSigning(false);
     }
@@ -235,7 +254,7 @@ export function WalletConnectModal({
     // If we're in the middle of signing, this is a force cancel
     const wasSigningInProgress = signing;
 
-    setError(null);
+    setSigningError(null);
     try {
       await rejectCurrentRequest();
       addWcEvent({
@@ -250,8 +269,9 @@ export function WalletConnectModal({
       });
       setStatus(wasSigningInProgress ? 'Signing cancelled.' : 'Request rejected.');
     } catch (err: any) {
-      // Even if reject fails, clear local state to unblock UI
-      setError(err?.message || 'Failed to reject.');
+      // rejectCurrentRequest clears the pending request either way, so the UI
+      // is already unblocked; just report what went wrong on the wire.
+      setSigningError(err?.message || 'Failed to reject.');
     } finally {
       setSigning(false);
     }
@@ -528,7 +548,7 @@ export function WalletConnectModal({
 
         {/* Signing Request - show prominently when there's a request */}
         {signingRequestForWallet && signingRequestSummary && (
-          error ? (
+          signingError ? (
             /* Signing failed - show error state */
             <div className="mt-4 rounded-2xl border-2 border-red-400 bg-red-50 p-4 text-xs">
               <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-red-700">
@@ -539,14 +559,14 @@ export function WalletConnectModal({
               </p>
               <div className="mt-2 rounded-lg border border-red-200 bg-red-100 p-2 text-red-700">
                 <p className="font-medium">Error:</p>
-                <p className="mt-1 break-all">{error}</p>
+                <p className="mt-1 break-all">{signingError}</p>
               </div>
               <div className="mt-3 flex gap-2">
                 <button
                   type="button"
                   className="rounded-lg border border-blue-300 bg-blue-100 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-blue-700 hover:bg-blue-200"
                   onClick={() => {
-                    setError(null);
+                    setSigningError(null);
                   }}
                 >
                   Try Again
@@ -680,6 +700,15 @@ export function WalletConnectModal({
                   } catch (err: any) {
                     console.error('[Modal] Approval failed:', err);
                     setError(err?.message || 'Failed to approve session.');
+                    // Approval can fail for reasons retrying will not fix (an
+                    // expired proposal, namespaces we cannot satisfy). Tell the
+                    // dApp instead of leaving it waiting on a dead proposal.
+                    try {
+                      await rejectSessionProposal(pendingProposal.id);
+                    } catch (rejectErr) {
+                      console.warn('[Modal] Could not reject after failed approval:', rejectErr);
+                    }
+                    setPendingProposal(null);
                   } finally {
                     setBusy(false);
                   }
@@ -795,6 +824,11 @@ export function WalletConnectModal({
                           )}
                         </div>
                         <p className="text-[10px] text-steel">{session.peerUrl}</p>
+                        {sessionError[session.topic] && (
+                          <p className="mt-1 break-all text-[10px] text-red-600">
+                            {sessionError[session.topic]}
+                          </p>
+                        )}
                       </div>
                     </div>
                     <div className="flex gap-1">
@@ -815,12 +849,27 @@ export function WalletConnectModal({
                         className="rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-[10px] uppercase tracking-wide text-red-600 hover:bg-red-100"
                         onClick={async () => {
                           setBusy(true);
+                          setSessionError((prev) => {
+                            const next = { ...prev };
+                            delete next[session.topic];
+                            return next;
+                          });
                           try {
+                            // Resolves without throwing when the SDK no longer
+                            // has the session, so a stale row can always be
+                            // cleared instead of failing forever.
                             await disconnectSession(session.topic);
                             removeActiveSession(session.topic);
                             setStatus(`Disconnected from ${session.peerName}.`);
                           } catch (err: any) {
-                            setError(err?.message || 'Failed to disconnect.');
+                            console.error('[Modal] Disconnect failed:', err);
+                            // Keep the row so it can be retried, and show why
+                            // right here — the shared banner sits far above the
+                            // session list, off screen.
+                            setSessionError((prev) => ({
+                              ...prev,
+                              [session.topic]: err?.message || 'Failed to disconnect.'
+                            }));
                           } finally {
                             setBusy(false);
                           }

@@ -8,7 +8,9 @@
  * - Session topics are just reconnection hints
  * - WC sessions actually restore from IndexedDB, not URL
  * - Malformed URLs gracefully ignored (returns null)
+ * - Restored values are attacker-controlled and are validated, not trusted
  */
+import { decodeSolanaPublicKey } from './solanaOffchainMessage';
 
 /** Compact URL-encoded state schema */
 export interface UrlEncodedState {
@@ -35,6 +37,19 @@ export interface RestoredState {
 }
 
 const STATE_PARAM = 'state';
+
+// URL state is attacker-supplied: anyone can send a link with a crafted #state=.
+const MAX_RESTORED_ACCOUNTS = 200;
+const SOLANA_PATH_PATTERN = /^m(\/\d+'?){3,5}$/;
+
+function isValidSolanaAddress(address: string): boolean {
+  try {
+    // Throws unless this is base58 that decodes to a 32-byte Ed25519 key.
+    return decodeSolanaPublicKey(address).length === 32;
+  } catch {
+    return false;
+  }
+}
 
 /** Base64url encode (URL-safe base64 without padding) */
 function base64urlEncode(str: string): string {
@@ -88,7 +103,12 @@ export function decodeUrlState(encoded: string): RestoredState | null {
       return null;
     }
 
-    // Validate accounts array
+    // Validate accounts array.
+    // Shape checks only used to be `typeof === 'string'`, which let a crafted
+    // link inject arbitrary text as "Device Wallets". Addresses must decode as
+    // Solana public keys and paths must look like Solana BIP32 paths; anything
+    // else is dropped.
+    const seenAddresses = new Set<string>();
     const accounts = parsed.a
       .filter(
         (tuple): tuple is [string, string] =>
@@ -97,6 +117,15 @@ export function decodeUrlState(encoded: string): RestoredState | null {
           typeof tuple[0] === 'string' &&
           typeof tuple[1] === 'string'
       )
+      .filter(([address, path]) => {
+        if (!isValidSolanaAddress(address)) return false;
+        if (!SOLANA_PATH_PATTERN.test(path)) return false;
+        // Duplicates break index lookups that resolve rows by address.
+        if (seenAddresses.has(address)) return false;
+        seenAddresses.add(address);
+        return true;
+      })
+      .slice(0, MAX_RESTORED_ACCOUNTS)
       .map(([address, path]) => ({ address, path }));
 
     if (accounts.length === 0) {
@@ -104,11 +133,12 @@ export function decodeUrlState(encoded: string): RestoredState | null {
       return null;
     }
 
-    // Validate activeAccountIndex
-    const activeAccountIndex = Math.max(
-      0,
-      Math.min(parsed.i, accounts.length - 1)
-    );
+    // Validate activeAccountIndex.
+    // Number.isInteger rejects NaN and fractions, both of which used to survive
+    // and leave every balance stuck on a loading spinner.
+    const activeAccountIndex = Number.isInteger(parsed.i)
+      ? Math.max(0, Math.min(parsed.i, accounts.length - 1))
+      : 0;
 
     // Parse session hints (optional)
     const sessionHints = Array.isArray(parsed.s)
@@ -121,9 +151,13 @@ export function decodeUrlState(encoded: string): RestoredState | null {
               typeof s.n === 'string' &&
               typeof s.w === 'string'
           )
+          // A hint may only name an account that is actually in this state and
+          // decodes as a public key. The hint feeds session -> wallet binding,
+          // so an unchecked value could point a live session at another account.
+          .filter((s) => isValidSolanaAddress(s.w) && seenAddresses.has(s.w))
           .map((s) => ({
             topic: s.t,
-            peerName: s.n,
+            peerName: s.n.slice(0, 128),
             walletAddress: s.w
           }))
       : [];

@@ -2,8 +2,9 @@ import { Connection, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { DEFAULT_SOLANA_RPC } from './constants';
 
+// api.mainnet.solana.com is not a public Solana endpoint; listing it first only
+// bought a DNS failure before every real fallback attempt.
 const FALLBACK_RPCS = [
-  'https://api.mainnet.solana.com',
   'https://api.mainnet-beta.solana.com'
 ];
 

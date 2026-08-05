@@ -49,10 +49,19 @@ fail closed unless the requested signer and returned signature are verified.
 - Stable Core firmware `2.12.4+` implements OCMS v1: `SolanaSignMessage=906`, nested message field `4`, and `SolanaMessageSignature=907` with `signed_data` field `2`.
 - Core `2.12.1`-`2.12.3` used incompatible OCMS v0 bytes field `2`; `missing required field message` from an OCMS v1 request means the displayed firmware version must be checked before debugging transport.
 - The published protobuf package can lag firmware. Keep the immutable patch in `trezorMessages.ts`, and round-trip its request/response schema in tests.
+- `@trezor/protobuf` rewrites typographic quotes (`‘` `’`) to ASCII in every string field, so the device would sign different bytes than requested. Reject such messages up front rather than normalizing them.
+- `Initialize` answers with `Features` by design; treating that as an interrupted call re-sends `Initialize` and raises a spurious `Unexpected response: Features`.
+- Memoize the in-flight promise for every lazy singleton (`initTrezor`, `TrezorConnect.init`, `initWalletConnect`). A boolean set after the awaits lets concurrent callers each build a transport/wallet, and the loser keeps listening while the winner is used.
+- `ui-close_window` must not fire while a prompt is pending: enumeration queues many calls, and one completing would dismiss a live PIN/passphrase dialog while the device still waits for the answer, blanking the UI until the next Connect.
 - WalletConnect `solana_signMessage` supplies raw base58 bytes, while Trezor signs the OCMS v1 domain-separated envelope. Return and verify `signedMessage`; legacy raw-message-only dApps may reject it.
+- Every WalletConnect request must end in a response or a rejection. Clear `pendingRequest` in `finally`, reject on signing failure, and clean up on `session_delete`/`session_request_expire`, or the dApp hangs until expiry.
+- Register WC event handlers via `onWalletConnectReady`, not inside a one-shot init: the wallet is also created lazily by `pairWithDApp` when a Project ID is entered at runtime, and a wallet with no listeners silently swallows every proposal.
+- Session topics and pairing topics are separate keychains; ping the one the topic belongs to. The store can also outlive an SDK session, so disconnect must tolerate a missing session and still drop it locally, or the row can never be cleared.
 - Never double-hex protobuf byte fields: decoded Trezor signatures are already hex strings. Verify 64-byte signatures and exact firmware `signed_data` locally.
-- Derive transaction/message signing paths from the requested signer and `solanaAccounts`; never sign from a merely selected/default path.
-- Balance calls go through `/api/solana`; refresh accounts sequentially with spacing to avoid public-RPC 403/429 responses.
+- Resolve signing paths from the transaction/message itself and require the signer to equal the requesting session's approved address; never sign from a selected/default path, and never look the signer up across all enumerated accounts. `signing.ts` centralizes this in `resolveTransactionSigner`; `lint-tests.js` enforces it per function, not per file.
+- A locally computed signature check must gate the response: `VersionedTransaction.addSignature`/`serialize` verify nothing, so an unverified signature would otherwise reach the dApp.
+- Balance calls go through `/api/solana`; refresh accounts sequentially with spacing to avoid public-RPC 403/429 responses. Provider URLs carry API keys, so the proxy logs and error bodies must carry the host only, never the URL.
+- `api.mainnet-beta.solana.com` is the public mainnet endpoint; `api.mainnet.solana.com` does not resolve and must not be listed as a fallback.
 - Account addresses render eagerly while hardware enumeration continues; balance fetching must not block address discovery.
 - The stated design is stateless, but current URL restoration uses `sessionStorage` and WalletConnect maintains SDK storage. Do not claim zero browser persistence until that implementation is removed or redesigned.
 - Generate `web/package-lock.json` with the Node 20/npm 10 Docker toolchain; newer host npm can produce a lock that fails Docker `npm ci` on optional WASM packages.

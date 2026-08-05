@@ -4,7 +4,7 @@ import { Buffer } from 'buffer';
 import bs58 from 'bs58';
 import { signSolanaMessage, signSolanaTransaction } from './trezor';
 import { respondToSessionRequest, rejectSessionRequest } from './walletconnect';
-import { useAppStore } from './store';
+import { useAppStore, type SolanaAccount } from './store';
 import { DEFAULT_SOLANA_RPC } from './constants';
 import {
   decodeSolanaPublicKey,
@@ -33,6 +33,149 @@ export function normalizeSignature(hexSig: string): Buffer {
     throw new Error(`Unexpected signature length: ${sigBytes.length} bytes (expected 64, hex was ${hexSig.length} chars)`);
   }
   return sigBytes;
+}
+
+/**
+ * Address this WalletConnect session was approved for.
+ * Throws if the session is gone, so callers fail closed rather than falling
+ * back to whatever account the UI happens to have selected.
+ */
+function requireSessionWalletAddress(topic: string): string {
+  const session = useAppStore
+    .getState()
+    .activeSessions.find((item) => item.topic === topic);
+  if (!session) {
+    throw new Error('WalletConnect session is no longer active');
+  }
+  return session.walletAddress;
+}
+
+/**
+ * Resolve which Trezor account must sign this transaction.
+ *
+ * The signer comes from the transaction bytes, never from UI state, and must be
+ * the address the requesting session was approved for — otherwise a dApp
+ * connected to one account could harvest signatures from any other enumerated
+ * account. Every required-signature slot is considered, so transactions where
+ * the wallet co-signs without paying the fee still resolve.
+ */
+export function resolveTransactionSigner(
+  rawBytes: Uint8Array,
+  sessionWalletAddress: string
+): { account: SolanaAccount; signerKey: PublicKey } {
+  const store = useAppStore.getState();
+
+  let requiredSigners: PublicKey[];
+  try {
+    const vtx = VersionedTransaction.deserialize(rawBytes);
+    const required = vtx.message.header.numRequiredSignatures;
+    requiredSigners = vtx.message.staticAccountKeys.slice(0, required);
+  } catch {
+    const tx = Transaction.from(rawBytes);
+    requiredSigners = tx.signatures.map((entry) => entry.publicKey);
+    if (requiredSigners.length === 0 && tx.feePayer) {
+      requiredSigners = [tx.feePayer];
+    }
+  }
+
+  if (requiredSigners.length === 0) {
+    throw new Error('Transaction declares no required signers');
+  }
+
+  const signerKey = requiredSigners.find(
+    (key) => key.toBase58() === sessionWalletAddress
+  );
+  if (!signerKey) {
+    throw new Error(
+      `Transaction does not require a signature from the connected account ` +
+        `${sessionWalletAddress}. Required signers: ` +
+        requiredSigners.map((key) => key.toBase58()).join(', ')
+    );
+  }
+
+  const matchingAccount = store.solanaAccounts.find(
+    (acc) => acc.address === sessionWalletAddress
+  );
+  if (!matchingAccount) {
+    throw new Error(
+      `No Trezor account found for signer ${sessionWalletAddress}. ` +
+        `Available accounts: ${store.solanaAccounts
+          .map((a) => a.address)
+          .join(', ')}`
+    );
+  }
+
+  return { account: matchingAccount, signerKey };
+}
+
+/**
+ * Sign one transaction on the device and attach the signature to the slot that
+ * actually belongs to the signing key.
+ *
+ * Fails closed: a signature that does not verify locally is never returned to
+ * the dApp, because neither VersionedTransaction.addSignature nor serialize()
+ * checks it.
+ */
+async function signTransactionForSession(
+  rawBytes: Uint8Array,
+  messageBytes: Uint8Array,
+  sessionWalletAddress: string
+): Promise<{ signedTxBase64: string; sigBytes: Buffer; signerAddress: string }> {
+  const { account, signerKey } = resolveTransactionSigner(
+    rawBytes,
+    sessionWalletAddress
+  );
+
+  console.log('[Signing] Signing with:', {
+    derivationPath: account.path,
+    signerAddress: account.address,
+    messageBytesLength: messageBytes.length
+  });
+
+  const { signature: hexSig } = await signSolanaTransaction(
+    messageBytes,
+    account.path
+  );
+  const sigBytes = normalizeSignature(hexSig);
+
+  const isValid = nacl.sign.detached.verify(
+    messageBytes,
+    sigBytes,
+    signerKey.toBytes()
+  );
+  console.log(
+    '[Signing] Local signature verification:',
+    isValid ? 'VALID' : 'INVALID'
+  );
+  if (!isValid) {
+    throw new Error(
+      `Local signature verification failed for ${signerKey.toBase58()}. ` +
+        'Refusing to return an unverified signature.'
+    );
+  }
+
+  let versioned: VersionedTransaction | null = null;
+  try {
+    versioned = VersionedTransaction.deserialize(rawBytes);
+  } catch {
+    versioned = null;
+  }
+
+  let signedTxBytes: Uint8Array;
+  if (versioned) {
+    versioned.addSignature(signerKey, sigBytes);
+    signedTxBytes = versioned.serialize();
+  } else {
+    const tx = Transaction.from(rawBytes);
+    tx.addSignature(signerKey, sigBytes);
+    signedTxBytes = tx.serialize();
+  }
+
+  return {
+    signedTxBase64: Buffer.from(signedTxBytes).toString('base64'),
+    sigBytes,
+    signerAddress: account.address
+  };
 }
 
 export async function handleSessionRequest(event: {
@@ -105,6 +248,13 @@ async function handleSolanaSignTransaction(
     messageBytes = tx.serializeMessage();
   }
 
+  // Resolve the signer now so an unauthorized request is rejected immediately
+  // instead of being staged and left for the user to discover.
+  const { account } = resolveTransactionSigner(
+    txBytes,
+    requireSessionWalletAddress(topic)
+  );
+
   const store = useAppStore.getState();
   store.setPendingRequest({
     type: 'solana_signTransaction',
@@ -112,7 +262,8 @@ async function handleSolanaSignTransaction(
     requestId,
     transaction: txForDisplay,
     rawBytes: txBytes,
-    messageBytes
+    messageBytes,
+    signerAddress: account.address
   });
 }
 
@@ -120,93 +271,34 @@ export async function approveCurrentRequest() {
   const store = useAppStore.getState();
   const pending = store.pendingRequest;
   if (!pending) throw new Error('No pending request');
+  if (pending.type !== 'solana_signTransaction') {
+    throw new Error('No transaction request pending');
+  }
 
   const { topic, requestId, rawBytes, messageBytes } = pending;
+  if (!rawBytes) throw new Error('Pending request has no transaction bytes');
 
-  // Find the signer address from the transaction
-  let signerAddress: string;
-  try {
-    const vtx = VersionedTransaction.deserialize(rawBytes!);
-    signerAddress = vtx.message.staticAccountKeys[0].toBase58();
-  } catch {
-    const tx = Transaction.from(rawBytes!);
-    signerAddress = tx.feePayer?.toBase58() || '';
+  // Re-resolve against the live session: the session or account list may have
+  // changed while the request sat on screen.
+  const sessionWalletAddress = requireSessionWalletAddress(topic);
+  if (pending.signerAddress && pending.signerAddress !== sessionWalletAddress) {
+    throw new Error('WalletConnect signer changed before approval');
   }
 
-  // Find the derivation path for this signer from our accounts
-  const matchingAccount = store.solanaAccounts.find(
-    (acc) => acc.address === signerAddress
-  );
-
-  if (!matchingAccount) {
-    throw new Error(
-      `No account found for signer ${signerAddress}. ` +
-      `Available accounts: ${store.solanaAccounts.map(a => a.address).join(', ')}`
-    );
-  }
-
-  const derivationPath = matchingAccount.path;
-
-  console.log('[Signing] Signing with:', {
-    derivationPath,
-    signerAddress,
-    storeAddress: store.solanaAddress,
-    messageBytesLength: messageBytes.length,
-    messageBytesHex: Buffer.from(messageBytes).toString('hex').substring(0, 64) + '...'
-  });
-
-  const { signature: hexSig } = await signSolanaTransaction(
+  const { signedTxBase64, sigBytes } = await signTransactionForSession(
+    rawBytes,
     messageBytes,
-    derivationPath
+    sessionWalletAddress
   );
 
-  const sigBytes = normalizeSignature(hexSig);
-
-  let signedTxBase64: string;
-  let isVersioned = false;
-
   try {
-    const vtx = VersionedTransaction.deserialize(rawBytes!);
-    isVersioned = true;
-    const signerKey = vtx.message.staticAccountKeys[0];
-    console.log('[Signing] VersionedTransaction signer:', signerKey.toBase58());
-    console.log('[Signing] Derivation path signer matches:', signerAddress === signerKey.toBase58());
-
-    // Verify signature locally before adding
-    const isValid = nacl.sign.detached.verify(
-      messageBytes,
-      sigBytes,
-      signerKey.toBytes()
-    );
-    console.log('[Signing] Local signature verification:', isValid ? 'VALID' : 'INVALID');
-
-    vtx.addSignature(signerKey, sigBytes);
-    signedTxBase64 = Buffer.from(vtx.serialize()).toString('base64');
-  } catch (versionedError: any) {
-    if (isVersioned) {
-      // VersionedTransaction parsing worked but addSignature failed
-      console.error('[Signing] VersionedTransaction addSignature failed:', versionedError);
-      throw versionedError;
-    }
-    // Try legacy Transaction
-    console.log('[Signing] Trying legacy Transaction format');
-    const tx = Transaction.from(rawBytes!);
-    console.log('[Signing] Legacy Transaction feePayer:', tx.feePayer?.toBase58());
-    console.log('[Signing] Legacy Transaction signatures:', tx.signatures.map(s => s.publicKey.toBase58()));
-    if (!tx.feePayer) {
-      throw new Error('Transaction has no feePayer set');
-    }
-    tx.addSignature(tx.feePayer, sigBytes);
-    signedTxBase64 = Buffer.from(tx.serialize()).toString('base64');
+    await respondToSessionRequest(topic, requestId, {
+      signature: bs58.encode(sigBytes),
+      transaction: signedTxBase64
+    });
+  } finally {
+    store.clearPendingRequest();
   }
-
-  const response = {
-    signature: bs58.encode(sigBytes),
-    transaction: signedTxBase64
-  };
-
-  await respondToSessionRequest(topic, requestId, response);
-  store.clearPendingRequest();
 }
 
 export async function rejectCurrentRequest() {
@@ -214,8 +306,17 @@ export async function rejectCurrentRequest() {
   const pending = store.pendingRequest;
   if (!pending) return;
 
-  await rejectSessionRequest(pending.topic, pending.requestId, 'User rejected');
-  store.clearPendingRequest();
+  try {
+    await rejectSessionRequest(
+      pending.topic,
+      pending.requestId,
+      'User rejected'
+    );
+  } finally {
+    // Clear regardless: a dead session must not wedge the UI on a request that
+    // can never be answered.
+    store.clearPendingRequest();
+  }
 }
 
 async function handleSolanaSignAllTransactions(
@@ -228,24 +329,32 @@ async function handleSolanaSignAllTransactions(
     throw new Error('No transactions in request');
   }
 
+  const sessionWalletAddress = requireSessionWalletAddress(topic);
+
+  const staged = transactions.map((txBase64) => {
+    const txBytes = Buffer.from(txBase64, 'base64');
+    let messageBytes: Uint8Array;
+    try {
+      const vtx = VersionedTransaction.deserialize(txBytes);
+      messageBytes = vtx.message.serialize();
+    } catch {
+      const tx = Transaction.from(txBytes);
+      messageBytes = tx.serializeMessage();
+    }
+    // Reject the whole batch up front if any member is not signable by the
+    // connected account, rather than part-signing and failing midway.
+    resolveTransactionSigner(txBytes, sessionWalletAddress);
+    return { rawBytes: txBytes, messageBytes };
+  });
+
   const store = useAppStore.getState();
   store.setPendingRequest({
     type: 'solana_signAllTransactions',
     topic,
     requestId,
-    transactions: transactions.map((txBase64) => {
-      const txBytes = Buffer.from(txBase64, 'base64');
-      let messageBytes: Uint8Array;
-      try {
-        const vtx = VersionedTransaction.deserialize(txBytes);
-        messageBytes = vtx.message.serialize();
-      } catch {
-        const tx = Transaction.from(txBytes);
-        messageBytes = tx.serializeMessage();
-      }
-      return { rawBytes: txBytes, messageBytes };
-    }),
-    messageBytes: new Uint8Array()
+    transactions: staged,
+    messageBytes: new Uint8Array(),
+    signerAddress: sessionWalletAddress
   });
 }
 
@@ -256,34 +365,29 @@ export async function approveBatchRequest() {
     throw new Error('No batch request pending');
   }
 
+  const sessionWalletAddress = requireSessionWalletAddress(pending.topic);
+  if (pending.signerAddress && pending.signerAddress !== sessionWalletAddress) {
+    throw new Error('WalletConnect signer changed before approval');
+  }
+
   const signedTransactions: string[] = [];
 
   for (const tx of pending.transactions || []) {
-    const { signature: hexSig } = await signSolanaTransaction(
+    const { signedTxBase64 } = await signTransactionForSession(
+      tx.rawBytes,
       tx.messageBytes,
-      store.solanaDerivationPath
+      sessionWalletAddress
     );
-
-    const sigBytes = normalizeSignature(hexSig);
-
-    try {
-      const vtx = VersionedTransaction.deserialize(tx.rawBytes);
-      vtx.addSignature(vtx.message.staticAccountKeys[0], sigBytes);
-      signedTransactions.push(Buffer.from(vtx.serialize()).toString('base64'));
-    } catch {
-      const legacyTx = Transaction.from(tx.rawBytes);
-      legacyTx.addSignature(legacyTx.feePayer!, sigBytes);
-      signedTransactions.push(
-        Buffer.from(legacyTx.serialize()).toString('base64')
-      );
-    }
+    signedTransactions.push(signedTxBase64);
   }
 
-  await respondToSessionRequest(pending.topic, pending.requestId, {
-    transactions: signedTransactions
-  });
-
-  store.clearPendingRequest();
+  try {
+    await respondToSessionRequest(pending.topic, pending.requestId, {
+      transactions: signedTransactions
+    });
+  } finally {
+    store.clearPendingRequest();
+  }
 }
 
 async function handleSolanaSignAndSendTransaction(
@@ -303,6 +407,11 @@ async function handleSolanaSignAndSendTransaction(
     messageBytes = tx.serializeMessage();
   }
 
+  const { account } = resolveTransactionSigner(
+    txBytes,
+    requireSessionWalletAddress(topic)
+  );
+
   const store = useAppStore.getState();
   store.setPendingRequest({
     type: 'solana_signAndSendTransaction',
@@ -310,7 +419,8 @@ async function handleSolanaSignAndSendTransaction(
     requestId,
     rawBytes: txBytes,
     messageBytes,
-    sendAfterSign: true
+    sendAfterSign: true,
+    signerAddress: account.address
   });
 }
 
@@ -320,24 +430,21 @@ export async function approveAndSendRequest() {
   if (!pending || !pending.sendAfterSign) {
     throw new Error('No send-after-sign request pending');
   }
-
-  const { signature: hexSig } = await signSolanaTransaction(
-    pending.messageBytes,
-    store.solanaDerivationPath
-  );
-
-  const sigBytes = normalizeSignature(hexSig);
-  let signedTxBytes: Uint8Array;
-
-  try {
-    const vtx = VersionedTransaction.deserialize(pending.rawBytes!);
-    vtx.addSignature(vtx.message.staticAccountKeys[0], sigBytes);
-    signedTxBytes = vtx.serialize();
-  } catch {
-    const tx = Transaction.from(pending.rawBytes!);
-    tx.addSignature(tx.feePayer!, sigBytes);
-    signedTxBytes = tx.serialize();
+  if (!pending.rawBytes) {
+    throw new Error('Pending request has no transaction bytes');
   }
+
+  const sessionWalletAddress = requireSessionWalletAddress(pending.topic);
+  if (pending.signerAddress && pending.signerAddress !== sessionWalletAddress) {
+    throw new Error('WalletConnect signer changed before approval');
+  }
+
+  const { signedTxBase64 } = await signTransactionForSession(
+    pending.rawBytes,
+    pending.messageBytes,
+    sessionWalletAddress
+  );
+  const signedTxBytes = Buffer.from(signedTxBase64, 'base64');
 
   const rpcUrl =
     DEFAULT_SOLANA_RPC.startsWith('/') && typeof window !== 'undefined'
@@ -349,11 +456,13 @@ export async function approveAndSendRequest() {
     preflightCommitment: 'confirmed'
   });
 
-  await respondToSessionRequest(pending.topic, pending.requestId, {
-    signature: txHash
-  });
-
-  store.clearPendingRequest();
+  try {
+    await respondToSessionRequest(pending.topic, pending.requestId, {
+      signature: txHash
+    });
+  } finally {
+    store.clearPendingRequest();
+  }
 }
 
 async function handleSolanaSignMessage(
@@ -452,10 +561,13 @@ export async function approveMessageRequest() {
     signerAddress: messageSignerAddress,
     signedDataBytes: verified.signedDataBytes.length
   });
-  await respondToSessionRequest(pending.topic, pending.requestId, {
-    signature: verified.signature,
-    signedMessage: verified.signedMessage,
-    messageVersion: 1
-  });
-  store.clearPendingRequest();
+  try {
+    await respondToSessionRequest(pending.topic, pending.requestId, {
+      signature: verified.signature,
+      signedMessage: verified.signedMessage,
+      messageVersion: 1
+    });
+  } finally {
+    store.clearPendingRequest();
+  }
 }

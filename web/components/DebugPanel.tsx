@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppStore } from '@/lib/store';
 
 export function DebugPanel() {
@@ -19,13 +19,20 @@ export function DebugPanel() {
     setMounted(true);
   }, []);
 
+  // Replay logs captured before this panel mounted — once.
+  //
+  // This used to key off `debugLogs.length === 0`, which meant the Clear button
+  // instantly refilled the panel from the buffer and could never empty it.
+  const bufferReplayed = useRef(false);
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    if (bufferReplayed.current) return;
+    bufferReplayed.current = true;
     const buffer = (window as any).__sifarLogBuffer;
-    if (Array.isArray(buffer) && buffer.length && debugLogs.length === 0) {
+    if (Array.isArray(buffer) && buffer.length) {
       buffer.forEach((line: string) => appendDebugLog(line));
     }
-  }, [appendDebugLog, debugLogs.length]);
+  }, [appendDebugLog]);
 
   useEffect(() => {
     appendDebugLog(
@@ -95,7 +102,15 @@ export function DebugPanel() {
         <div className="flex gap-2">
           <button
             type="button"
-            onClick={() => clearDebugLog()}
+            onClick={() => {
+              // Also drop the window buffer, or a later remount replays
+              // everything the user just cleared.
+              if (typeof window !== 'undefined') {
+                const buffer = (window as any).__sifarLogBuffer;
+                if (Array.isArray(buffer)) buffer.length = 0;
+              }
+              clearDebugLog();
+            }}
             className="rounded-lg border border-amber-200 px-2 py-1 text-[10px] uppercase tracking-wide"
           >
             Clear

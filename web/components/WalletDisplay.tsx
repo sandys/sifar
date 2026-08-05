@@ -32,6 +32,7 @@ export function WalletDisplay() {
   const [filterConnected, setFilterConnected] = useState(false);
   const pageSize = 5;
   const urlStateChecked = useRef(false);
+  const autoOpenedRequestId = useRef<number | null>(null);
   const { generateShareableUrl } = useUrlState();
 
   // Count sessions per address
@@ -106,43 +107,51 @@ export function WalletDisplay() {
     }
   }, [openWalletConnectModal, solanaAccounts]);
 
-  // Update URL hash when modal opens (captures current state for bookmarking)
+  // Update the URL hash when the modal opens, once per open.
+  //
+  // generateShareableUrl's identity changes on every balance update, so keeping
+  // it in the dep list fired history.replaceState once per enumerated account
+  // (Safari throws past 100 per 30s) and wrote the hash straight back after
+  // providers.tsx had deliberately cleared it.
+  const lastHashedIndex = useRef<number | null>(null);
   useEffect(() => {
-    if (
-      walletConnectModalAccountIndex !== null &&
-      solanaAccounts.length > 0
-    ) {
-      generateShareableUrl(walletConnectModalAccountIndex);
+    if (walletConnectModalAccountIndex === null) {
+      lastHashedIndex.current = null;
+      return;
     }
-  }, [
-    generateShareableUrl,
-    solanaAccounts.length,
-    walletConnectModalAccountIndex
-  ]);
+    if (solanaAccounts.length === 0) return;
+    if (lastHashedIndex.current === walletConnectModalAccountIndex) return;
+    lastHashedIndex.current = walletConnectModalAccountIndex;
+    generateShareableUrl(walletConnectModalAccountIndex);
+    // generateShareableUrl intentionally omitted: it is re-created on every
+    // store mutation and would defeat the once-per-open guard above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [solanaAccounts.length, walletConnectModalAccountIndex]);
 
-  // Auto-open modal when there's a pending signing request
+  // Auto-open the modal once per incoming signing request.
+  //
+  // Deliberately does NOT depend on walletConnectModalAccountIndex: reading the
+  // index it also writes made this effect re-fire on close and immediately
+  // re-open, so the modal could not be dismissed and account selection snapped
+  // back. The ref makes it fire once per request instead.
   useEffect(() => {
-    if (!pendingRequest) return;
-    // Find the wallet associated with this session
-    const session = activeSessions.find((s) => s.topic === pendingRequest.topic);
-    if (session) {
-      const walletIndex = solanaAccounts.findIndex(
-        (a) => a.address === session.walletAddress
-      );
-      if (
-        walletIndex >= 0 &&
-        walletConnectModalAccountIndex !== walletIndex
-      ) {
-        openWalletConnectModal(walletIndex);
-      }
+    if (!pendingRequest) {
+      autoOpenedRequestId.current = null;
+      return;
     }
-  }, [
-    activeSessions,
-    openWalletConnectModal,
-    pendingRequest,
-    solanaAccounts,
-    walletConnectModalAccountIndex
-  ]);
+    if (autoOpenedRequestId.current === pendingRequest.requestId) return;
+
+    const session = activeSessions.find((s) => s.topic === pendingRequest.topic);
+    if (!session) return;
+
+    const walletIndex = solanaAccounts.findIndex(
+      (a) => a.address === session.walletAddress
+    );
+    if (walletIndex >= 0) {
+      autoOpenedRequestId.current = pendingRequest.requestId;
+      openWalletConnectModal(walletIndex);
+    }
+  }, [activeSessions, openWalletConnectModal, pendingRequest, solanaAccounts]);
 
   if (!solanaAddress) {
     return null;

@@ -89,6 +89,7 @@ function parsePath(path: string): number[] {
 class TrezorConnectLike {
   private settings: InitSettings = {};
   private initialized = false;
+  private initPromise: Promise<void> | null = null;
   private transport: WebUsbTransport | null = null;
   private session: Session | null = null;
   private descriptor: Descriptor | null = null;
@@ -125,6 +126,20 @@ class TrezorConnectLike {
     }
 
     if (this.initialized) return;
+    // Guard the whole async body, not just the flag: `initialized` was set after
+    // several awaits, so concurrent callers each constructed a WebUsbTransport
+    // and called listen() on it.
+    if (this.initPromise) return this.initPromise;
+    this.initPromise = this.doInit(settings);
+    try {
+      await this.initPromise;
+    } catch (error) {
+      this.initPromise = null;
+      throw error;
+    }
+  }
+
+  private async doInit(settings: InitSettings): Promise<void> {
     ensureBuffer();
 
     this.settings = { ...this.settings, ...settings };
@@ -162,6 +177,7 @@ class TrezorConnectLike {
   }
 
   async dispose() {
+    this.initPromise = null;
     this.session = null;
     this.descriptor = null;
     this.features = null;
@@ -275,10 +291,8 @@ class TrezorConnectLike {
           signerCount: params.signers.length,
           derivationPathDepth: parsePath(params.path).length
         });
-        if (
-          firmwareVersion !== 'unknown' &&
-          !supportsStableSolanaOcmsV1(this.features)
-        ) {
+        // Fail closed: an unreadable firmware version is not permission to try.
+        if (!supportsStableSolanaOcmsV1(this.features)) {
           throw new Error(
             `Solana OCMS v1 requires Trezor Core firmware 2.12.4 or newer. Device reports ${firmwareVersion}.`
           );
@@ -432,7 +446,11 @@ class TrezorConnectLike {
         const { type, message } = response.payload;
         this.log('Response', type);
 
-        if (type === 'Features' && name !== 'GetFeatures') {
+        // Initialize and GetFeatures both answer with Features by design; only
+        // treat it as an interruption for other calls. Without the Initialize
+        // exemption every session acquire sent Initialize twice and then raised
+        // a spurious 'Unexpected response: Features' error.
+        if (type === 'Features' && name !== 'GetFeatures' && name !== 'Initialize') {
           this.features = message;
           if (retriedAfterFeatures) {
             throw new Error('Unexpected response: Features');
@@ -560,7 +578,11 @@ class TrezorConnectLike {
       }
       throw error;
     } finally {
-      if (!hadError || suppressUiError) {
+      // Never close a prompt that is still awaiting the user. Enumeration runs
+      // many queued calls, and one of them completing used to dismiss a live
+      // PIN/passphrase dialog while the device sat waiting for the answer —
+      // the UI went blank and the flow only reappeared on a fresh Connect.
+      if ((!hadError || suppressUiError) && !this.pendingUi) {
         this.emitUi({ type: 'ui-close_window' });
       }
     }

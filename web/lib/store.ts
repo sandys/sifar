@@ -16,7 +16,7 @@ interface SPLToken {
   logoUri?: string;
 }
 
-interface SolanaAccount {
+export interface SolanaAccount {
   address: string;
   path: string;
   balance: number | null;
@@ -55,6 +55,9 @@ interface PendingRequest {
   transactions?: any[];
   rawBytes?: Uint8Array;
   messageBytes: Uint8Array;
+  // Address resolved from the transaction bytes at staging time and re-checked
+  // at approval time. Never sourced from the selected-account UI state.
+  signerAddress?: string;
   humanMessage?: string;
   messageText?: string;
   messageSignerAddress?: string;
@@ -274,9 +277,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
       };
       return { solanaAccounts: accounts } as AppState;
     });
+    // The account list can be replaced while this request is in flight (a
+    // reconnect into a passphrase wallet, a re-enumeration). Writing back by
+    // index alone would paint the old wallet's balance onto a new address.
+    const stillSameAccount = () =>
+      get().solanaAccounts[index]?.address === account.address;
+
     try {
       const { getAllBalances } = await import('./solana');
       const { sol, tokens } = await getAllBalances(account.address);
+      if (!stillSameAccount()) return;
       get().updateSolanaAccount(index, {
         balance: sol,
         tokens,
@@ -284,6 +294,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         balanceError: null
       });
     } catch (err: any) {
+      if (!stillSameAccount()) return;
       get().updateSolanaAccount(index, {
         balance: null,
         tokens: [],

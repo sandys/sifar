@@ -512,14 +512,36 @@ try {
 // FIX: Extract signer address from transaction, find matching account, use its path.
 //
 // NEVER use store.solanaDerivationPath directly for signing - always derive from transaction signer.
+//
+// REGRESSION HISTORY: this lint used to grep the whole file, so one compliant
+// function (approveCurrentRequest) made it pass while approveBatchRequest and
+// approveAndSendRequest still signed with store.solanaDerivationPath. The checks
+// below are therefore scoped per function.
+function splitTopLevelFunctions(source) {
+  const blocks = [];
+  const pattern = /^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z0-9_]+)/gm;
+  let match = pattern.exec(source);
+  while (match) {
+    const start = match.index;
+    const next = pattern.exec(source);
+    blocks.push({
+      name: match[1],
+      body: source.slice(start, next ? next.index : source.length)
+    });
+    match = next;
+  }
+  return blocks;
+}
+
 try {
   const signingFile = readRepoFile('web/lib/signing.ts');
+  const functions = splitTopLevelFunctions(signingFile);
 
   // MUST extract signer from transaction before signing
-  if (!signingFile.includes('staticAccountKeys[0]') && !signingFile.includes('feePayer')) {
+  if (!signingFile.includes('staticAccountKeys') && !signingFile.includes('feePayer')) {
     addError(
       'web/lib/signing.ts',
-      'CRITICAL: Must extract signer address from transaction (staticAccountKeys[0] or feePayer)'
+      'CRITICAL: Must extract signer address from transaction (staticAccountKeys or feePayer)'
     );
   }
 
@@ -531,22 +553,62 @@ try {
     );
   }
 
-  // MUST NOT use store.solanaDerivationPath directly in signSolanaTransaction call
-  if (signingFile.includes('signSolanaTransaction') &&
-      signingFile.includes('store.solanaDerivationPath') &&
-      !signingFile.includes('matchingAccount')) {
-    addError(
-      'web/lib/signing.ts',
-      'CRITICAL: Do not use store.solanaDerivationPath for signing. ' +
-      'Extract signer from transaction and find matching account derivation path.'
-    );
-  }
+  // MUST NOT use the selected-account path anywhere near a signing call.
+  // Scoped per function so a compliant sibling cannot mask a violation.
+  functions.forEach((fn) => {
+    if (
+      fn.body.includes('signSolanaTransaction') &&
+      fn.body.includes('store.solanaDerivationPath')
+    ) {
+      addError(
+        'web/lib/signing.ts',
+        `CRITICAL: ${fn.name}() uses store.solanaDerivationPath for signing. ` +
+        'Extract the signer from the transaction and use its account derivation path.'
+      );
+    }
+  });
 
-  // Should verify signature locally before sending
-  if (!signingFile.includes('nacl.sign.detached.verify') && !signingFile.includes('signature verification')) {
+  // The signature must be attached to the slot belonging to the resolved signer,
+  // not blindly to account key 0.
+  functions.forEach((fn) => {
+    if (/addSignature\(\s*[A-Za-z0-9_.]*\.?staticAccountKeys\[0\]/.test(fn.body)) {
+      addError(
+        'web/lib/signing.ts',
+        `CRITICAL: ${fn.name}() attaches the signature to staticAccountKeys[0] ` +
+        'instead of the resolved signer key. Multi-signer transactions get a valid ' +
+        'signature written into the wrong slot.'
+      );
+    }
+  });
+
+  // Local verification must gate the response, not just be computed and logged.
+  if (!signingFile.includes('nacl.sign.detached.verify')) {
     addError(
       'web/lib/signing.ts',
       'Should verify signature locally before sending to catch mismatches early'
+    );
+  } else {
+    const verifier = functions.find((fn) =>
+      fn.body.includes('nacl.sign.detached.verify')
+    );
+    if (verifier && !/if\s*\(\s*!\s*isValid\s*\)/.test(verifier.body)) {
+      addError(
+        'web/lib/signing.ts',
+        `CRITICAL: ${verifier.name}() computes the local verification result but ` +
+        'never branches on it. An invalid signature must throw, not be returned ' +
+        'to the dApp (addSignature/serialize do not verify).'
+      );
+    }
+  }
+
+  // Transaction signing must be bound to the address the session was approved
+  // for, matching what the solana_signMessage path already enforces.
+  if (!signingFile.includes('requireSessionWalletAddress')) {
+    addError(
+      'web/lib/signing.ts',
+      'CRITICAL: Transaction requests must resolve the approved session address ' +
+      '(requireSessionWalletAddress) so a dApp connected to one account cannot ' +
+      'obtain signatures from another enumerated account.'
     );
   }
 } catch (error) {

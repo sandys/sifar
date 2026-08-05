@@ -6,11 +6,16 @@ import {
   approveSessionProposal,
   hasWalletConnectProjectId,
   initWalletConnect,
+  onWalletConnectReady,
   setWalletConnectProjectId
 } from '@/lib/walletconnect';
 import { handleSessionRequest } from '@/lib/signing';
 import { useAppStore } from '@/lib/store';
 import { getStateFromHash, clearStateFromHash } from '@/lib/urlState';
+
+// Module-level so it survives remounts: handlers must attach exactly once per
+// wallet instance, no matter how many times the provider mounts.
+const walletsWithHandlers = new WeakSet<object>();
 
 export function AppProviders({ children }: { children: React.ReactNode }) {
   const setWcInitialized = useAppStore((state) => state.setWcInitialized);
@@ -23,7 +28,6 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
   const refreshSolanaAccountBalance = useAppStore(
     (state) => state.refreshSolanaAccountBalance
   );
-  const initialized = useRef(false);
   const urlStateRestored = useRef(false);
 
   // Restore state from URL hash on mount (runs before WC init)
@@ -125,8 +129,17 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
 
     append('[Debug] console capture enabled');
 
-    const buffer = ((window as any).__sifarLogBuffer =
+    const BUFFER_LIMIT = 500;
+    const buffer: string[] = ((window as any).__sifarLogBuffer =
       (window as any).__sifarLogBuffer || []);
+    const push = (line: string) => {
+      buffer.push(line);
+      // Bounded like the store's log, so a long enumeration cannot grow this
+      // without limit for the whole session.
+      if (buffer.length > BUFFER_LIMIT) {
+        buffer.splice(0, buffer.length - BUFFER_LIMIT);
+      }
+    };
 
     levels.forEach((level) => {
       const original = (console[level] as (...args: any[]) => void).bind(console);
@@ -140,19 +153,19 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
           return; // Skip WC internal cleanup messages
         }
         const line = `[${stamp()}] ${level.toUpperCase()} ${formatted}`;
-        buffer.push(line);
+        push(line);
         append(line);
       };
     });
 
     const onError = (event: ErrorEvent) => {
       const line = `[${stamp()}] ERROR ${event.message} @ ${event.filename}:${event.lineno}:${event.colno}`;
-      buffer.push(line);
+      push(line);
       append(line);
     };
     const onRejection = (event: PromiseRejectionEvent) => {
       const line = `[${stamp()}] REJECTION ${format(event.reason)}`;
-      buffer.push(line);
+      push(line);
       append(line);
     };
     window.addEventListener('error', onError);
@@ -167,12 +180,16 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       });
       window.removeEventListener('error', onError);
       window.removeEventListener('unhandledrejection', onRejection);
+      // Must clear: the guard above would otherwise skip re-patching after a
+      // StrictMode remount, leaving debug capture dead for the whole session.
+      (window as any).__sifarConsolePatched = false;
     };
   }, []);
 
   useEffect(() => {
-    if (initialized.current) return;
-    initialized.current = true;
+    // No mount-once ref guard here: it left the watchdog below disarmed after a
+    // StrictMode remount. Re-entrancy is handled where it matters instead —
+    // initWalletConnect memoizes, attachWallet is idempotent per wallet.
 
     // Timeout to prevent infinite loading spinner
     const timeout = setTimeout(() => {
@@ -182,26 +199,31 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       }
     }, 5000);
 
-    async function init() {
-      try {
-        if (!hasWalletConnectProjectId()) {
-          console.warn('[WC] Skipping init: WalletConnect Project ID missing');
-          setAppReady(true);
-          return;
-        }
-        const wallet = await initWalletConnect();
-        setWcInitialized(true);
-        setAppReady(true);
+    // Attach to whichever wallet instance appears, including one created later
+    // by pairWithDApp after the user enters a Project ID by hand. Idempotent per
+    // wallet, so a remount cannot double-register and handle each request twice.
+    function attachWallet(wallet: Awaited<ReturnType<typeof initWalletConnect>>) {
+      if (walletsWithHandlers.has(wallet)) return;
+      walletsWithHandlers.add(wallet);
+      setWcInitialized(true);
+      setAppReady(true);
 
+      try {
         // Sync existing sessions from WC IndexedDB to our store
         const existingSessions = wallet.getActiveSessions();
         const sessionTopics = Object.keys(existingSessions);
 
-        // Get session hints from URL state (if available)
-        const hintsJson = sessionStorage.getItem('urlState_sessionHints');
-        const sessionHints: Array<{ topic: string; peerName: string; walletAddress: string }> =
-          hintsJson ? JSON.parse(hintsJson) : [];
-        sessionStorage.removeItem('urlState_sessionHints');
+        // Get session hints from URL state (if available).
+        // sessionStorage throws in Safari private mode; a failure here must not
+        // abort handler registration below.
+        let sessionHints: Array<{ topic: string; peerName: string; walletAddress: string }> = [];
+        try {
+          const hintsJson = sessionStorage.getItem('urlState_sessionHints');
+          sessionHints = hintsJson ? JSON.parse(hintsJson) : [];
+          sessionStorage.removeItem('urlState_sessionHints');
+        } catch (error) {
+          console.warn('[WC] Could not read session hints:', error);
+        }
 
         console.log('[WC] Session sync:', {
           existingInIndexedDB: sessionTopics.length,
@@ -218,16 +240,19 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
             const session = existingSessions[topic];
             const hint = sessionHints.find((h) => h.topic === topic);
 
-            // Extract wallet address from hint or from session namespaces
-            let walletAddress = hint?.walletAddress;
+            // The session's own namespaces are authoritative. A URL hint is only
+            // a fallback for display: letting it override meant a crafted
+            // #state= link could rebind a live session to a different account,
+            // which the message-signing path then trusts as the signer.
+            let walletAddress: string | undefined;
+            const solanaNamespace = session.namespaces?.solana;
+            const namespaceAccounts = solanaNamespace?.accounts || [];
+            if (namespaceAccounts.length > 0) {
+              const parts = namespaceAccounts[0].split(':');
+              walletAddress = parts[parts.length - 1];
+            }
             if (!walletAddress) {
-              // Try to extract from session namespaces (e.g., "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp:ADDRESS")
-              const solanaNamespace = session.namespaces?.solana;
-              const accounts = solanaNamespace?.accounts || [];
-              if (accounts.length > 0) {
-                const parts = accounts[0].split(':');
-                walletAddress = parts[parts.length - 1];
-              }
+              walletAddress = hint?.walletAddress;
             }
 
             if (walletAddress) {
@@ -346,13 +371,34 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
 
         wallet.on('session_delete', (event) => {
           console.log('[WC] session_delete received:', event.topic);
-          useAppStore.getState().addWcEvent({
+          const store = useAppStore.getState();
+          store.addWcEvent({
             type: 'session_deleted',
             topic: event.topic,
             details: `Session deleted: ${event.topic.substring(0, 16)}...`,
             rawParams: JSON.stringify(event, null, 2)
           });
           removeActiveSession(event.topic);
+
+          // Drop anything staged against the dead topic, otherwise the modal
+          // stays pinned to a request that can never be answered.
+          if (store.pendingRequest?.topic === event.topic) {
+            store.clearPendingRequest();
+            store.setStatusMessage('dApp disconnected. Pending request cancelled.');
+          }
+        });
+
+        wallet.on('session_request_expire', (event) => {
+          console.log('[WC] session_request_expire received:', event.id);
+          const store = useAppStore.getState();
+          if (store.pendingRequest?.requestId === event.id) {
+            store.clearPendingRequest();
+            store.addWcEvent({
+              type: 'request_rejected',
+              details: `Request ${event.id} expired before approval`
+            });
+            store.setStatusMessage('Signing request expired.');
+          }
         });
 
         wallet.on('proposal_expire', (event) => {
@@ -370,10 +416,10 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
           }
         });
       } catch (error: any) {
-        console.error('[WC] Init failed:', error);
+        console.error('[WC] Handler attach failed:', error);
         useAppStore.getState().addWcEvent({
           type: 'error',
-          details: `WalletConnect init failed: ${error?.message || 'Unknown error'}`,
+          details: `WalletConnect setup failed: ${error?.message || 'Unknown error'}`,
           rawParams: JSON.stringify({ error: error?.message, stack: error?.stack }, null, 2)
         });
         // Still mark app as ready so user can interact (maybe fix project ID)
@@ -381,9 +427,33 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       }
     }
 
+    const detachReadyListener = onWalletConnectReady(attachWallet);
+
+    async function init() {
+      if (!hasWalletConnectProjectId()) {
+        console.warn('[WC] Deferring init: WalletConnect Project ID missing');
+        setAppReady(true);
+        return;
+      }
+      try {
+        await initWalletConnect();
+      } catch (error: any) {
+        console.error('[WC] Init failed:', error);
+        useAppStore.getState().addWcEvent({
+          type: 'error',
+          details: `WalletConnect init failed: ${error?.message || 'Unknown error'}`,
+          rawParams: JSON.stringify({ error: error?.message, stack: error?.stack }, null, 2)
+        });
+        setAppReady(true);
+      }
+    }
+
     init();
 
-    return () => clearTimeout(timeout);
+    return () => {
+      clearTimeout(timeout);
+      detachReadyListener();
+    };
   }, [removeActiveSession, setPendingProposal, setWcInitialized, setAppReady]);
 
   useEffect(() => {

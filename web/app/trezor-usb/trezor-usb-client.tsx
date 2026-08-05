@@ -81,9 +81,12 @@ export function TrezorUsbClient() {
     setStatusMessage('Connecting to Trezor…');
     abortRef.current = false;
 
-    // Set timeout for connection
+    // Set timeout for connection.
+    // Reads live state rather than the `loading`/`trezorConnected` values
+    // captured when this handler was created — those are always false at click
+    // time, which made the watchdog a no-op.
     timeoutRef.current = setTimeout(() => {
-      if (loading && !trezorConnected) {
+      if (!useAppStore.getState().trezorConnected) {
         setError('Connection timed out. Device may be unresponsive. Try unplugging and reconnecting.');
         handleDisconnect();
       }
@@ -153,11 +156,16 @@ export function TrezorUsbClient() {
 
       const refreshBalances = async () => {
         for (let i = 0; i < accounts.length; i += 1) {
+          // Bail on disconnect: this loop runs for minutes across many
+          // accounts, and a second one starting on reconnect would double the
+          // RPC rate and race the first one's writes.
+          if (abortRef.current) return;
           await refreshSolanaAccountBalance(i);
           if (i < accounts.length - 1) {
             await sleep(5000);
           }
         }
+        if (abortRef.current) return;
         setStatusMessage('Ready');
       };
 
