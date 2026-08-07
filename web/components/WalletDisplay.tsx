@@ -1,41 +1,33 @@
 'use client';
 
-import { useMemo, useState, useEffect, useRef } from 'react';
+import { useMemo, useState } from 'react';
 import { useAppStore } from '@/lib/store';
-import { WalletConnectModal } from '@/components/WalletConnectModal';
-import { useUrlState } from '@/lib/hooks/useUrlState';
+import { Button } from '@/components/ui/Button';
+import { accountLabelFromPath, shortenAddress } from '@/lib/format';
 
+/** Shown before "show all" for large enumerations. */
+const INITIAL_VISIBLE = 10;
+
+/**
+ * Accounts step: pick which hardware account to use.
+ *
+ * Replaces the old 5-per-page pager, which for a 200-account device meant 40
+ * pages behind two ~26px buttons. Search plus a bounded initial list scales
+ * without pagination or a virtualization dependency.
+ */
 export function WalletDisplay() {
   const solanaAccounts = useAppStore((state) => state.solanaAccounts);
   const activeAccountIndex = useAppStore((state) => state.activeAccountIndex);
-  const solanaAddress = useAppStore((state) => state.solanaAddress);
-  const solanaBalance = useAppStore((state) => state.solanaBalance);
-  const splTokens = useAppStore((state) => state.splTokens);
-  const trezorDeviceInfo = useAppStore((state) => state.trezorDeviceInfo);
   const activeSessions = useAppStore((state) => state.activeSessions);
-  const pendingRequest = useAppStore((state) => state.pendingRequest);
-  const walletConnectModalAccountIndex = useAppStore(
-    (state) => state.walletConnectModalAccountIndex
-  );
-  const openWalletConnectModal = useAppStore(
-    (state) => state.openWalletConnectModal
-  );
-  const closeWalletConnectModal = useAppStore(
-    (state) => state.closeWalletConnectModal
-  );
+  const selectAccount = useAppStore((state) => state.selectAccount);
   const refreshSolanaAccountBalance = useAppStore(
     (state) => state.refreshSolanaAccountBalance
   );
-  const [page, setPage] = useState(0);
-  const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState<Set<number>>(() => new Set());
-  const [filterConnected, setFilterConnected] = useState(false);
-  const pageSize = 5;
-  const urlStateChecked = useRef(false);
-  const autoOpenedRequestId = useRef<number | null>(null);
-  const { generateShareableUrl } = useUrlState();
 
-  // Count sessions per address
+  const [query, setQuery] = useState('');
+  const [filterConnected, setFilterConnected] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+
   const sessionCountByAddress = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const session of activeSessions) {
@@ -44,344 +36,142 @@ export function WalletDisplay() {
     return counts;
   }, [activeSessions]);
 
-  // Total accounts with sessions
-  const accountsWithSessions = useMemo(
-    () => solanaAccounts.filter((a) => sessionCountByAddress[a.address] > 0),
+  const connectedCount = useMemo(
+    () => solanaAccounts.filter((a) => sessionCountByAddress[a.address] > 0).length,
     [solanaAccounts, sessionCountByAddress]
   );
 
-  // Filtered accounts based on filter state
-  const filteredAccounts = useMemo(
-    () => (filterConnected ? accountsWithSessions : solanaAccounts),
-    [filterConnected, accountsWithSessions, solanaAccounts]
-  );
+  const matches = useMemo(() => {
+    const term = query.trim().toLowerCase();
+    return solanaAccounts
+      .map((account, index) => ({ account, index }))
+      .filter(({ account, index }) => {
+        if (filterConnected && !sessionCountByAddress[account.address]) {
+          return false;
+        }
+        if (!term) return true;
+        // A bare number jumps straight to that account index, which is how you
+        // find "account 137" without scrolling past 136 rows.
+        if (/^\d+$/.test(term)) return index === Number(term);
+        return account.address.toLowerCase().includes(term);
+      });
+  }, [solanaAccounts, query, filterConnected, sessionCountByAddress]);
 
-  const totalPages = useMemo(
-    () => Math.max(1, Math.ceil(filteredAccounts.length / pageSize)),
-    [filteredAccounts.length]
-  );
+  const visible = showAll || query.trim() ? matches : matches.slice(0, INITIAL_VISIBLE);
+  const hidden = matches.length - visible.length;
 
-  useEffect(() => {
-    if (page > totalPages - 1) {
-      setPage(Math.max(0, totalPages - 1));
-    }
-  }, [page, totalPages]);
-
-  const pageAccounts = useMemo(() => {
-    const start = page * pageSize;
-    return filteredAccounts.slice(start, start + pageSize);
-  }, [page, pageSize, filteredAccounts]);
-
-  useEffect(() => {
-    if (!copiedAddress) return;
-    const timer = setTimeout(() => setCopiedAddress(null), 1200);
-    return () => clearTimeout(timer);
-  }, [copiedAddress]);
-
-  useEffect(() => {
-    if (walletConnectModalAccountIndex === null) return;
-    if (!solanaAccounts[walletConnectModalAccountIndex]) {
-      closeWalletConnectModal();
-    }
-  }, [
-    closeWalletConnectModal,
-    solanaAccounts,
-    walletConnectModalAccountIndex
-  ]);
-
-  // Check for URL state and auto-open modal on mount
-  useEffect(() => {
-    if (urlStateChecked.current) return;
-    if (solanaAccounts.length === 0) return;
-    urlStateChecked.current = true;
-
-    const storedIndex = sessionStorage.getItem('urlState_activeAccountIndex');
-    if (storedIndex !== null) {
-      const index = parseInt(storedIndex, 10);
-      if (!isNaN(index) && index >= 0 && index < solanaAccounts.length) {
-        console.log('[WalletDisplay] Auto-opening modal from URL state, index:', index);
-        openWalletConnectModal(index);
-      }
-      // Clear after use
-      sessionStorage.removeItem('urlState_activeAccountIndex');
-    }
-  }, [openWalletConnectModal, solanaAccounts]);
-
-  // Update the URL hash when the modal opens, once per open.
-  //
-  // generateShareableUrl's identity changes on every balance update, so keeping
-  // it in the dep list fired history.replaceState once per enumerated account
-  // (Safari throws past 100 per 30s) and wrote the hash straight back after
-  // providers.tsx had deliberately cleared it.
-  const lastHashedIndex = useRef<number | null>(null);
-  useEffect(() => {
-    if (walletConnectModalAccountIndex === null) {
-      lastHashedIndex.current = null;
-      return;
-    }
-    if (solanaAccounts.length === 0) return;
-    if (lastHashedIndex.current === walletConnectModalAccountIndex) return;
-    lastHashedIndex.current = walletConnectModalAccountIndex;
-    generateShareableUrl(walletConnectModalAccountIndex);
-    // generateShareableUrl intentionally omitted: it is re-created on every
-    // store mutation and would defeat the once-per-open guard above.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [solanaAccounts.length, walletConnectModalAccountIndex]);
-
-  // Auto-open the modal once per incoming signing request.
-  //
-  // Deliberately does NOT depend on walletConnectModalAccountIndex: reading the
-  // index it also writes made this effect re-fire on close and immediately
-  // re-open, so the modal could not be dismissed and account selection snapped
-  // back. The ref makes it fire once per request instead.
-  useEffect(() => {
-    if (!pendingRequest) {
-      autoOpenedRequestId.current = null;
-      return;
-    }
-    if (autoOpenedRequestId.current === pendingRequest.requestId) return;
-
-    const session = activeSessions.find((s) => s.topic === pendingRequest.topic);
-    if (!session) return;
-
-    const walletIndex = solanaAccounts.findIndex(
-      (a) => a.address === session.walletAddress
-    );
-    if (walletIndex >= 0) {
-      autoOpenedRequestId.current = pendingRequest.requestId;
-      openWalletConnectModal(walletIndex);
-    }
-  }, [activeSessions, openWalletConnectModal, pendingRequest, solanaAccounts]);
-
-  if (!solanaAddress) {
-    return null;
-  }
+  if (solanaAccounts.length === 0) return null;
 
   return (
-    <section className="rounded-3xl border border-amber-200/40 bg-white/80 p-5">
-      <div className="flex flex-col gap-2">
-        <h2 className="font-jomhuria text-2xl tracking-wide text-amber-800">
-          Device Wallets
+    <section className="grid gap-4">
+      <div>
+        <h2 className="font-display text-xl font-semibold text-ink">
+          Choose an account
         </h2>
-        {solanaAccounts.length > 0 && (
-          <div className="grid gap-2">
-            <div className="rounded-2xl border border-blue-200 bg-blue-50/70 p-3 text-xs text-blue-900">
-              <p className="font-semibold">Choose the account to connect</p>
-              <p className="mt-1 text-[11px] text-steel">
-                A WalletConnect URI pairs the dApp; it is not itself signed.
-                Hardware confirmation appears only after the dApp sends a
-                transaction or message request.
-              </p>
-            </div>
-            <div className="flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase tracking-[0.25em] text-amber-700">
-                Accounts
-              </p>
-              {accountsWithSessions.length > 0 && (
-                <div className="flex rounded-lg border border-amber-200 bg-amber-50/50 text-[10px] font-semibold uppercase tracking-wide">
-                  <button
-                    type="button"
-                    onClick={() => setFilterConnected(false)}
-                    className={`rounded-l-lg px-3 py-1 transition ${
-                      !filterConnected
-                        ? 'bg-amber-600 text-white'
-                        : 'text-amber-700 hover:bg-amber-100'
-                    }`}
-                  >
-                    All ({solanaAccounts.length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setFilterConnected(true)}
-                    className={`rounded-r-lg px-3 py-1 transition ${
-                      filterConnected
-                        ? 'bg-green-600 text-white'
-                        : 'text-green-700 hover:bg-green-100'
-                    }`}
-                  >
-                    Connected ({accountsWithSessions.length})
-                  </button>
-                </div>
-              )}
-            </div>
-            {pageAccounts.map((account) => {
-              // Find the real index in solanaAccounts (not filtered)
-              const absoluteIndex = solanaAccounts.findIndex(
-                (a) => a.address === account.address
-              );
-              const sessionCount = sessionCountByAddress[account.address] || 0;
-              const isRefreshing =
-                refreshing.has(absoluteIndex) ||
-                account.balanceStatus === 'loading';
-              return (
-                <div
-                  key={account.address}
-                  onClick={() => {
-                    openWalletConnectModal(absoluteIndex);
-                  }}
-                  role="button"
-                  tabIndex={0}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      openWalletConnectModal(absoluteIndex);
-                    }
-                  }}
-                  className={`flex items-start justify-between gap-3 rounded-2xl border px-3 py-2 text-left text-sm transition ${
-                    absoluteIndex === activeAccountIndex
-                      ? 'border-ember bg-ember/10'
-                      : sessionCount > 0
-                        ? 'border-green-300 bg-green-50'
-                        : 'border-amber-100 bg-white'
-                  }`}
-                >
-                  <div className="flex-1">
-                    <div className="flex items-start gap-2">
-                      <p className="break-all font-mono text-[11px]">
-                        {account.address}
-                      </p>
-                      {sessionCount > 0 && (
-                        <span className="shrink-0 rounded-full bg-green-500 px-1.5 py-0.5 text-[9px] font-bold text-white">
-                          {sessionCount} {sessionCount === 1 ? 'Session' : 'Sessions'}
-                        </span>
-                      )}
-                      <button
-                        type="button"
-                        className={`shrink-0 rounded-md border border-amber-200 px-2 py-0.5 text-[10px] uppercase tracking-wide ${
-                          copiedAddress === account.address
-                            ? 'bg-amber-200 text-ink'
-                            : 'text-steel'
-                        }`}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          navigator.clipboard.writeText(account.address);
-                          setCopiedAddress(account.address);
-                        }}
-                      >
-                        {copiedAddress === account.address ? 'Copied' : 'Copy'}
-                      </button>
-                    </div>
-                    <p className="mt-1 text-[10px] text-steel">
-                      Path {account.path.replace('m/', '')}
-                    </p>
-                    <p className="mt-1 text-[10px] font-semibold text-blue-700">
-                      Click to connect this account with WalletConnect
-                    </p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-[10px] text-steel">SOL</p>
-                    <div className="flex items-center justify-end gap-2">
-                      <p
-                        className={`font-display text-sm ${
-                          account.balanceStatus === 'error'
-                            ? 'text-ember'
-                            : ''
-                        }`}
-                      >
-                        {account.balanceStatus === 'loading' && '…'}
-                        {account.balanceStatus === 'error' && '⚠'}
-                        {account.balanceStatus === 'ok' &&
-                          account.balance !== null
-                          ? account.balance.toFixed(3)
-                          : ''}
-                      </p>
-                      <button
-                        type="button"
-                        className="rounded-md border border-amber-200 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-steel"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setRefreshing((prev) => {
-                            const next = new Set(prev);
-                            next.add(absoluteIndex);
-                            return next;
-                          });
-                          refreshSolanaAccountBalance(absoluteIndex)
-                            .catch(() => {})
-                            .finally(() => {
-                              setRefreshing((prev) => {
-                                const next = new Set(prev);
-                                next.delete(absoluteIndex);
-                                return next;
-                              });
-                            });
-                        }}
-                      >
-                        <span
-                          className={`inline-block transition-transform ${
-                            isRefreshing ? 'animate-spin' : ''
-                          }`}
-                        >
-                          ↻
-                        </span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-            {totalPages > 1 && (
-              <div className="flex items-center justify-between text-xs text-steel">
-                <button
-                  type="button"
-                  className="rounded-lg border border-amber-200 px-2 py-1"
-                  onClick={() => setPage((prev) => Math.max(0, prev - 1))}
-                  disabled={page === 0}
-                >
-                  Prev
-                </button>
-                <span>
-                  Page {page + 1} of {totalPages}
-                </span>
-                <button
-                  type="button"
-                  className="rounded-lg border border-amber-200 px-2 py-1"
-                  onClick={() => setPage((prev) => Math.min(totalPages - 1, prev + 1))}
-                  disabled={page >= totalPages - 1}
-                >
-                  Next
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-        <div className="grid grid-cols-2 gap-3 text-sm">
-          <div className="rounded-2xl border border-amber-100 bg-white p-3">
-            <p className="text-xs text-steel">SOL Balance</p>
-            <p className="mt-2 font-display text-xl">
-              {solanaBalance !== null ? solanaBalance.toFixed(4) : '—'}
-            </p>
-          </div>
-          <div className="rounded-2xl border border-amber-100 bg-white p-3">
-            <p className="text-xs text-steel">Tokens</p>
-            <p className="mt-2 font-display text-xl">{splTokens.length}</p>
-          </div>
-        </div>
-        {splTokens.length > 0 && (
-          <div className="mt-2 grid gap-2">
-            {splTokens.slice(0, 6).map((token) => (
-              <div
-                key={token.mint}
-                className="flex items-center justify-between rounded-xl border border-amber-100 bg-white px-3 py-2 text-sm"
-              >
-                <span>{token.symbol}</span>
-                <span className="font-mono">
-                  {token.balance.toLocaleString(undefined, {
-                    maximumFractionDigits: 6
-                  })}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
+        <p className="mt-1 text-sm text-steel">
+          The dApp you link next will be bound to this account. Only it can sign.
+        </p>
       </div>
-      <WalletConnectModal
-        open={walletConnectModalAccountIndex !== null}
-        account={
-          walletConnectModalAccountIndex !== null
-            ? solanaAccounts[walletConnectModalAccountIndex]
-            : undefined
-        }
-        onClose={closeWalletConnectModal}
+
+      <input
+        type="search"
+        inputMode="search"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Search address or account number"
+        aria-label="Search accounts"
+        className="min-h-[48px] w-full rounded-2xl border border-amber-200 bg-white px-4 text-ink placeholder:text-steel/60"
       />
+
+      {connectedCount > 0 && (
+        <div className="flex gap-2" role="group" aria-label="Filter accounts">
+          <Button
+            size="sm"
+            variant={filterConnected ? 'ghost' : 'primary'}
+            onClick={() => setFilterConnected(false)}
+            aria-pressed={!filterConnected}
+          >
+            All ({solanaAccounts.length})
+          </Button>
+          <Button
+            size="sm"
+            variant={filterConnected ? 'primary' : 'ghost'}
+            onClick={() => setFilterConnected(true)}
+            aria-pressed={filterConnected}
+          >
+            Connected ({connectedCount})
+          </Button>
+        </div>
+      )}
+
+      {visible.length === 0 && (
+        <p className="rounded-2xl border border-amber-200 bg-white/70 px-4 py-6 text-center text-sm text-steel">
+          No accounts match “{query}”.
+        </p>
+      )}
+
+      <ul className="grid gap-2">
+        {visible.map(({ account, index }) => {
+          const sessions = sessionCountByAddress[account.address] || 0;
+          const isActive = index === activeAccountIndex;
+          return (
+            <li key={account.address} className="list-row">
+              {/* One tap target per row. The old row was a role="button" div
+                  wrapping two more buttons that relied on stopPropagation —
+                  a mis-tap generator on touch. */}
+              <button
+                type="button"
+                onClick={() => selectAccount(index)}
+                className={`flex min-h-[68px] w-full items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-left transition ${
+                  isActive
+                    ? 'border-ember bg-white'
+                    : 'border-amber-200 bg-white/70 active:bg-white'
+                }`}
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-2">
+                    <span className="font-mono text-base text-ink">
+                      {shortenAddress(account.address)}
+                    </span>
+                    {sessions > 0 && (
+                      <span className="rounded-full bg-moss px-2 py-0.5 text-xs font-semibold text-white">
+                        {sessions}
+                      </span>
+                    )}
+                  </span>
+                  <span className="mt-0.5 block text-sm text-steel">
+                    {accountLabelFromPath(account.path)}
+                  </span>
+                </span>
+                <span className="shrink-0 text-right">
+                  <span className="block font-display text-base text-ink">
+                    {account.balanceStatus === 'loading'
+                      ? '…'
+                      : account.balanceStatus === 'error'
+                        ? '—'
+                        : `${account.balance ?? 0}`}
+                  </span>
+                  <span className="block text-xs text-steel">SOL</span>
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+
+      {hidden > 0 && (
+        <Button variant="ghost" fullWidth onClick={() => setShowAll(true)}>
+          Show all {matches.length} accounts
+        </Button>
+      )}
+
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => refreshSolanaAccountBalance(activeAccountIndex)}
+      >
+        Refresh selected balance
+      </Button>
     </section>
   );
 }

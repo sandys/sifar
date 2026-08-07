@@ -36,7 +36,10 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
 
    ```bash
    docker compose ps
-   curl -fsS http://localhost:3001/trezor-usb >/dev/null
+   # -k because local HTTPS uses a self-signed certificate. The server serves
+   # HTTPS when web/certificates/ holds a key pair and HTTP otherwise, never both.
+   curl -kfsS https://localhost:3001/trezor-usb >/dev/null || \
+     curl -fsS http://localhost:3001/trezor-usb >/dev/null
    docker compose logs --tail=200 web
    ```
 
@@ -47,22 +50,86 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
    debug terminal.
 
 5. Ask the human to unlock the latest-stable Core device, open
-   `http://localhost:3001/trezor-usb` in Chrome/Edge, click **Connect Trezor**,
+   `localhost:3001/trezor-usb` in Chrome/Edge, click **Connect Trezor**,
    select the device in Chrome's chooser, and complete PIN/passphrase prompts.
    WebUSB permission and physical confirmations cannot be bypassed.
 6. Verify addresses appear eagerly while enumeration continues. Balance/RPC
    errors are separate from hardware derivation and must display per-account
    failure without hiding valid addresses.
-7. Click **Open WalletConnect** or select an account, then paste a fresh `wc:`
+7. To test on a phone (Android Chrome + USB-OTG), two things must be true and
+   both fail silently. Everything here changes the human's machine, not the
+   repo, so `git checkout` does not undo any of it — always tell them how to
+   reverse what they turned on, and offer the teardown when testing ends.
+
+   **a. Secure context.** `navigator.usb` and `getUserMedia` refuse to run over
+   plain HTTP on anything but `localhost`.
+
+   ```bash
+   # enable
+   SIFAR_CERT_IPS="<phone-facing IP>" sh web/scripts/gen-cert.sh
+   docker compose restart web
+
+   # disable — returns the server to HTTP
+   rm -rf web/certificates/*.pem
+   docker compose restart web
+   ```
+
+   `scripts/dev.sh` switches on HTTPS whenever `web/certificates/` holds a key
+   pair. openssl runs on the host because the dev image ships none, and the
+   directory is gitignored so the key is never committed. Send the human to the
+   **https://** URL and have them accept the warning once. Chrome stores that
+   exception per origin; clearing it is Chrome site-data, not something the
+   repo controls.
+
+   **b. LAN ingress on WSL2.** In NAT mode Windows forwards `localhost` only,
+   so LAN clients cannot reach the dev server at all. Two options, one or the
+   other, never both.
+
+   Do not make the human substitute placeholders. Run this and paste the
+   output — it fills in the live WSL address, port and certificate state:
+
+   ```bash
+   sh web/scripts/lan-access.sh <their LAN IP>
+   ```
+
+   It prints enable, verify, disable, and the after-a-reboot re-add. Those
+   commands need Administrator rights, so this is the one place where the
+   "no Windows host commands" rule above means *hand them over*, not run them.
+   Full prose lives in "Testing on a phone" in `README.md`.
+
+   Option A, port proxy — needs an inbound firewall rule as well, and must be
+   redone whenever WSL restarts and takes a new IP:
+
+   ```powershell
+   # enable (elevated); target comes from `ip -4 -o addr show eth0`
+   netsh interface portproxy add v4tov4 listenport=3001 listenaddress=0.0.0.0 connectport=3001 connectaddress=<WSL_IP>
+   netsh advfirewall firewall add rule name="Sifar dev 3001" dir=in action=allow protocol=TCP localport=3001 profile=private
+
+   # inspect
+   netsh interface portproxy show v4tov4
+
+   # disable
+   netsh interface portproxy delete v4tov4 listenport=3001 listenaddress=0.0.0.0
+   netsh advfirewall firewall delete rule name="Sifar dev 3001"
+   ```
+
+   Option B, mirrored networking — permanent, no port proxy, no drifting IP;
+   needs Windows 11 22H2+ and WSL 2.0.0+. Enable by adding
+   `networkingMode=mirrored` under `[wsl2]` in `%USERPROFILE%\.wslconfig` then
+   `wsl --shutdown`; disable by deleting that line (or setting `nat`) and
+   shutting down again. Remove any Option A proxy first, and regenerate the
+   certificate afterwards because the addresses change.
+
+8. Click **Open WalletConnect** or select an account, then paste a fresh `wc:`
    URI or QR. The URI pairs the dApp and is not itself signed. Approve the
    session, trigger a `solana_signMessage` request in the dApp, click **Sign with
    Trezor**, inspect the message on-device, and confirm it physically. Require
    the debug terminal to report local OCMS byte and Ed25519 verification before
    the response is sent.
-8. If it fails, copy the debug terminal with its Copy button. Trace the sequence
+9. If it fails, copy the debug terminal with its Copy button. Trace the sequence
    through `[Sifar] Call`, response type, UI request/response, returned
    `signed_data`, and local verification. Never log the entered passphrase.
-9. For protocol regressions, run the focused tests and inspect these files:
+10. For protocol regressions, run the focused tests and inspect these files:
 
    ```bash
    docker compose exec web npx vitest run \
@@ -114,6 +181,32 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
 - `Forbidden key path` during address enumeration marks unsupported path range;
   it must stop background enumeration without replacing an active signing UI
   with an error prompt.
+- `ERR_CONNECTION_REFUSED` from a phone while the desktop works is WSL2 NAT, not
+  the app: WSL forwards `localhost` from Windows but not LAN clients. The Windows
+  portproxy **and** an inbound firewall rule are both required; the portproxy
+  alone is still dropped. WSL's IP is reassigned on restart, so a portproxy that
+  worked yesterday now points at nothing — re-read `ip -4 -o addr show eth0`.
+  `networkingMode=mirrored` in `.wslconfig` removes the whole class of problem.
+- A host VPN client is the other common cause of an unreachable dev server; most
+  capture or block LAN traffic.
+- A certificate warning with no "Proceed" option means the address is missing
+  from the certificate; re-run `gen-cert.sh` with it in `SIFAR_CERT_IPS`.
+- A port proxy that worked before a reboot now points at a dead address: WSL
+  takes a new IP each restart. Re-run `web/scripts/lan-access.sh` and give the
+  human its "AFTER A WSL RESTART" block, which deletes before re-adding.
+- A firewall rule added with `profile=private` does nothing if Windows has that
+  network classified as Public. Either the human sets it to Private, or the rule
+  is re-added without the profile filter.
+- Leaving a port proxy and an open firewall port behind after testing is the
+  most common loose end. Offer the teardown in `README.md` ("Turning it all
+  off") when the session ends, and confirm with
+  `netsh interface portproxy show v4tov4`.
+- A phone showing the "Sifar needs a secure connection" screen reached the server
+  but over plain HTTP. Generate a certificate and use the `https://` URL — the
+  server stops answering HTTP once one exists, so an `http://` URL looks dead
+  rather than redirecting.
+- `openssl: not found` inside the container is expected; `gen-cert.sh` is a host
+  script. Do not add openssl to the dev image for this.
 - Solana RPC 403/429/502 failures do not invalidate hardware addresses. Keep RPC
   behind `/api/solana`, space balance refreshes, and allow individual retries.
 - A valid OCMS v1 signature can still be rejected by a dApp that verifies the

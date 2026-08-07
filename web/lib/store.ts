@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { WizardIntent } from './wizard';
 
 interface DeviceInfo {
   label: string;
@@ -78,6 +79,8 @@ interface WCEventLogEntry {
   rawParams?: string;
 }
 
+type StatusTone = 'info' | 'warn' | 'error';
+
 interface AppState {
   trezorConnected: boolean;
   trezorDeviceInfo: DeviceInfo | null;
@@ -91,13 +94,18 @@ interface AppState {
   splTokens: SPLToken[];
   solanaAccounts: SolanaAccount[];
   activeAccountIndex: number;
-  walletConnectModalAccountIndex: number | null;
+  /** True once the user has explicitly picked an account (not the index-0 default). */
+  accountChosen: boolean;
+  /** Explicit wizard navigation, overriding the derived step. */
+  wizardIntent: WizardIntent;
   wcInitialized: boolean;
   appReady: boolean;
   activeSessions: WCSession[];
   pendingProposal: PendingProposal | null;
   pendingRequest: PendingRequest | null;
   statusMessage: string | null;
+  statusTone: StatusTone;
+  statusNonce: number;
   debugLogs: string[];
   wcEventLog: WCEventLogEntry[];
 
@@ -112,8 +120,9 @@ interface AppState {
   setSplTokens: (tokens: SPLToken[]) => void;
   setSolanaAccounts: (accounts: SolanaAccount[]) => void;
   setActiveAccount: (index: number) => void;
+  selectAccount: (index: number) => void;
+  setWizardIntent: (intent: WizardIntent) => void;
   openWalletConnectModal: (index: number) => void;
-  closeWalletConnectModal: () => void;
   setWcInitialized: (initialized: boolean) => void;
   setAppReady: (ready: boolean) => void;
   addActiveSession: (session: WCSession) => void;
@@ -124,6 +133,7 @@ interface AppState {
   setPendingRequest: (request: PendingRequest | null) => void;
   clearPendingRequest: () => void;
   setStatusMessage: (message: string | null) => void;
+  setStatus: (message: string | null, tone?: StatusTone) => void;
   updateSolanaAccount: (index: number, update: Partial<SolanaAccount>) => void;
   refreshSolanaAccountBalance: (index: number) => Promise<void>;
   appendDebugLog: (line: string) => void;
@@ -156,13 +166,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
   splTokens: [],
   solanaAccounts: [],
   activeAccountIndex: 0,
-  walletConnectModalAccountIndex: null,
+  accountChosen: false,
+  wizardIntent: null,
   wcInitialized: false,
   appReady: false,
   activeSessions: [],
   pendingProposal: null,
   pendingRequest: null,
   statusMessage: null,
+  statusTone: 'info',
+  statusNonce: 0,
   debugLogs: [],
   wcEventLog: [],
 
@@ -185,13 +198,14 @@ export const useAppStore = create<AppState>()((set, get) => ({
         Math.max(0, normalized.length - 1)
       );
       const selected = normalized[activeAccountIndex];
-      const modalIndex = state.walletConnectModalAccountIndex;
 
       return {
         solanaAccounts: normalized,
         activeAccountIndex,
-        walletConnectModalAccountIndex:
-          modalIndex !== null && normalized[modalIndex] ? modalIndex : null,
+        // Losing every account (disconnect) resets the wizard to step 1 rather
+        // than stranding the user on a step whose preconditions are gone.
+        accountChosen: normalized.length === 0 ? false : state.accountChosen,
+        wizardIntent: normalized.length === 0 ? null : state.wizardIntent,
         solanaAddress: selected?.address ?? null,
         solanaDerivationPath: selected?.path ?? "m/44'/501'/0'/0'",
         solanaBalance: selected?.balance ?? null,
@@ -211,20 +225,33 @@ export const useAppStore = create<AppState>()((set, get) => ({
       splTokens: selected.tokens
     });
   },
-  openWalletConnectModal: (index) => {
+  // The user explicitly picked this account. Distinct from setActiveAccount,
+  // which only moves the selection; this records the decision the wizard and
+  // the signing UI depend on.
+  selectAccount: (index) => {
     const selected = get().solanaAccounts[index];
     if (!selected) return;
     set({
       activeAccountIndex: index,
-      walletConnectModalAccountIndex: index,
+      accountChosen: true,
       solanaAddress: selected.address,
       solanaDerivationPath: selected.path,
       solanaBalance: selected.balance,
-      splTokens: selected.tokens
+      splTokens: selected.tokens,
+      // Clearing the intent here — inside the action that changes the
+      // underlying fact — is why the intent cannot desync. Never clear it from
+      // an effect.
+      wizardIntent: get().wizardIntent === 'accounts' ? null : get().wizardIntent
     });
   },
-  closeWalletConnectModal: () =>
-    set({ walletConnectModalAccountIndex: null }),
+  setWizardIntent: (intent) => set({ wizardIntent: intent }),
+  // Kept under its original name because it is the app's one entry point into
+  // the WalletConnect linking surface. It no longer mutates account state as a
+  // side effect of opening a panel: it selects, then navigates.
+  openWalletConnectModal: (index) => {
+    get().selectAccount(index);
+    set({ wizardIntent: 'link' });
+  },
   setWcInitialized: (initialized) => set({ wcInitialized: initialized }),
   setAppReady: (ready) => set({ appReady: ready }),
   addActiveSession: (session) =>
@@ -232,7 +259,14 @@ export const useAppStore = create<AppState>()((set, get) => ({
       activeSessions: [
         ...state.activeSessions.filter((s) => s.topic !== session.topic),
         session
-      ]
+      ],
+      // The reason the user was on the link step is now satisfied, so drop the
+      // override and let the derived step move them to Home.
+      wizardIntent:
+        state.wizardIntent === 'link' &&
+        session.walletAddress === state.solanaAddress
+          ? null
+          : state.wizardIntent
     })),
   removeActiveSession: (topic) =>
     set((state) => ({
@@ -244,7 +278,15 @@ export const useAppStore = create<AppState>()((set, get) => ({
   clearPendingProposal: () => set({ pendingProposal: null }),
   setPendingRequest: (request) => set({ pendingRequest: request }),
   clearPendingRequest: () => set({ pendingRequest: null }),
-  setStatusMessage: (message) => set({ statusMessage: message }),
+  setStatusMessage: (message) => get().setStatus(message, 'info'),
+  // statusNonce lets the toast re-show an identical message (e.g. the same
+  // rate-limit warning twice) instead of appearing stuck.
+  setStatus: (message, tone = 'info') =>
+    set((state) => ({
+      statusMessage: message,
+      statusTone: tone,
+      statusNonce: state.statusNonce + 1
+    })),
   updateSolanaAccount: (index, update) =>
     set((state) => {
       const accounts = [...state.solanaAccounts];

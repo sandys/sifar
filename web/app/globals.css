@@ -22,8 +22,69 @@ body {
     sans-serif;
 }
 
+html {
+  /* Stop iOS inflating text in landscape. */
+  -webkit-text-size-adjust: 100%;
+}
+
 body {
+  /* dvh second so browsers without it keep the vh value. dvh tracks the
+     collapsing URL bar; vh does not, which leaves a phone-height gap. */
   min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* iOS Safari zooms the viewport when a focused control's text is under 16px.
+   Setting it globally is deliberate: the previous per-class approach is exactly
+   how 12px inputs slipped in. Controls may look bigger, not smaller. */
+input,
+textarea,
+select {
+  font-size: 16px;
+}
+
+/* Removes the ~300ms tap delay and the grey flash on touch. */
+button,
+[role='button'],
+a,
+label,
+summary {
+  touch-action: manipulation;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Applied to sheet bodies and long lists so momentum scrolling does not chain
+   to the page behind them. */
+.scroll-contain {
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Page shell height, same vh-then-dvh reasoning as .sheet-panel below.
+   Tailwind's min-h-screen is 100vh, which on mobile is taller than the visible
+   viewport and leaves a scrollable dead zone under the fold. */
+.app-shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* Sheet height. Declared here rather than as two Tailwind arbitrary classes,
+   because with `max-h-[85vh] max-h-[85dvh]` the winner is decided by generated
+   stylesheet order, not by the order written in the class attribute. Here the
+   cascade is explicit: dvh overrides vh wherever dvh is supported. */
+.sheet-panel {
+  max-height: 85vh;
+  max-height: 85dvh;
+}
+
+/* Lets the browser skip layout for offscreen rows; keeps a 200-account list
+   cheap without pulling in a virtualization dependency. */
+.list-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 76px;
 }
 
 a {

@@ -17,6 +17,7 @@ returned signature are verified.
 - Web test all: `docker compose exec web npm test` — single unit file: `docker compose exec web npx vitest run lib/solanaOffchainMessage.test.ts`.
 - Web lint/typecheck: `docker compose exec web node tests/lint-tests.js && docker compose exec web npm run lint && docker compose exec web npm run typecheck`.
 - Web logs/stop: `docker compose logs -f web` / `docker compose down`.
+- Local HTTPS (needed to test on a phone): `SIFAR_CERT_IPS="<lan ip>" sh web/scripts/gen-cert.sh && docker compose restart web`. openssl runs on the host; the dev image has none.
 - Doc-sync hook (once per clone): `bash .agents/hooks/pre-commit --install`.
 
 ## Architecture
@@ -40,6 +41,9 @@ returned signature are verified.
 - PRs should affirm no private-key storage, no transaction modification, hardware-only signing, and chain validation.
 
 ## Gotchas & environment notes
+- `scripts/dev.sh` serves HTTPS when `web/certificates/` holds a key pair and plain HTTP otherwise — never both, so an `http://` URL looks dead once a certificate exists. `web/certificates/` is gitignored; never commit the key.
+- WebUSB *and* `getUserMedia` need a secure context. `localhost` qualifies; a LAN address does not, so phone testing requires the certificate above plus accepting the self-signed warning once.
+- On WSL2 in NAT mode, LAN clients cannot reach the dev server at all: Windows forwards `localhost` only. It needs an elevated `netsh` portproxy *and* an inbound firewall rule, and WSL's IP changes on every restart. `networkingMode=mirrored` in `.wslconfig` avoids both. Hand these commands to the human rather than running Windows binaries.
 - WebUSB requires Chromium, a secure context/localhost, a user gesture for the chooser, and an unlocked device. WSL/Docker serves the site; the browser owns USB and physical confirmations. Do not invoke Windows host commands such as `powershell.exe` from this repo workflow.
 - Use only `@trezor/transport` plus `@trezor/protobuf`. `@trezor/connect-web`, `connect.trezor.io`, popup flows, and standalone Trezor Bridge are intentionally excluded.
 - Stable Core firmware `2.12.4+` implements OCMS v1: `SolanaSignMessage=906`, nested message field `4`, and `SolanaMessageSignature=907` with `signed_data` field `2`.

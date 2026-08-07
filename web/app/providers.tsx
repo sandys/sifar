@@ -384,7 +384,7 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
           // stays pinned to a request that can never be answered.
           if (store.pendingRequest?.topic === event.topic) {
             store.clearPendingRequest();
-            store.setStatusMessage('dApp disconnected. Pending request cancelled.');
+            store.setStatus('dApp disconnected. Pending request cancelled.', 'warn');
           }
         });
 
@@ -397,7 +397,7 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
               type: 'request_rejected',
               details: `Request ${event.id} expired before approval`
             });
-            store.setStatusMessage('Signing request expired.');
+            store.setStatus('Signing request expired.', 'warn');
           }
         });
 
@@ -412,7 +412,7 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
           });
           if (store.pendingProposal?.id === event.id) {
             store.setPendingProposal(null);
-            store.setStatusMessage('Session proposal expired. Please try again.');
+            store.setStatus('Session proposal expired. Please try again.', 'warn');
           }
         });
       } catch (error: any) {

@@ -8,7 +8,10 @@ A Next.js web app that connects Trezor hardware wallets to Solana dApps via Wall
 docker compose up -d
 ```
 
-Open http://localhost:3001
+Open http://localhost:3001 — or **https**://localhost:3001 if you have generated a
+local certificate (see [Testing on a phone](#testing-on-a-phone)). The dev server
+serves HTTPS whenever `web/certificates/` contains a key pair, and plain HTTP
+otherwise; it does not serve both.
 
 View logs:
 ```bash
@@ -126,7 +129,177 @@ SOLANA_RPC_FALLBACKS         # Comma-separated fallback RPCs
 - Chrome/Edge (WebUSB support required)
 - Trezor must be unlocked before connecting
 - Current stable Core firmware (`2.12.4+`) is required for OCMS v1 message signing
-- HTTPS required for WebUSB outside localhost; Docker development uses Chrome's localhost secure-context exception
+- WebUSB and the camera both require a secure context. `localhost` qualifies on its own; any other address needs HTTPS (see [Testing on a phone](#testing-on-a-phone))
+- iOS and iPadOS expose no WebUSB to any browser — they all share Apple's engine, so signing is impossible there. The app detects this and explains it rather than failing at the first click
+
+## Testing on a phone
+
+Android Chrome with the Trezor on a USB-OTG cable is the target device. Two
+things must be true, and both fail silently otherwise: the page must be a
+secure context, and — on WSL2 — Windows must forward the port into the VM.
+
+Each step below has a matching **turn it off** step. Everything here changes
+your machine, not the repo, so none of it is undone by `git checkout`. When you
+are finished testing, work through [Turning it all off](#turning-it-all-off).
+
+### 1. HTTPS
+
+`navigator.usb` and `getUserMedia` only run in a secure context. `localhost`
+counts as one; `192.168.x.x` does not.
+
+**Enable.** Generate a self-signed certificate covering the address the phone
+will use:
+
+```bash
+SIFAR_CERT_IPS="192.168.1.42" sh web/scripts/gen-cert.sh
+docker compose restart web
+```
+
+The script adds this machine's own interfaces automatically alongside anything
+in `SIFAR_CERT_IPS`; extra hostnames go in `SIFAR_CERT_HOSTS`. Output lands in
+`web/certificates/`, which is gitignored — the private key is never committed.
+`web/scripts/dev.sh` picks it up and switches to HTTPS.
+
+On the phone, open the **https://** URL and accept the one-time "not private"
+warning (Advanced → Proceed). The origin is then a secure context. Use
+`https://`: once a certificate exists the server stops answering plain HTTP, so
+an `http://` URL looks like a dead connection rather than redirecting.
+
+**Disable.** Delete the key pair and restart; the server returns to HTTP.
+
+```bash
+rm -rf web/certificates/*.pem
+docker compose restart web
+```
+
+Chrome remembers the certificate exception per origin. To clear it: Android
+Settings → Apps → Chrome → Storage → clear site data, or visit the site and use
+the padlock → Site settings → Reset permissions.
+
+### 2. Reaching WSL2 from the LAN
+
+Skip this section entirely if you are not on WSL2.
+
+For the commands with your current addresses already filled in — including the
+teardown and the post-reboot fix — run:
+
+```bash
+sh web/scripts/lan-access.sh 192.168.1.42   # your Windows LAN IP
+```
+
+The rest of this section explains what those commands do.
+
+In its default NAT mode WSL2 forwards `localhost` from Windows but **not**
+connections from other devices, so the phone cannot reach the dev server at
+all. Pick one of the two options below — you do not need both.
+
+#### Option A — port proxy (works today, needs redoing after each restart)
+
+**Enable.** Get the Linux IP, then run both commands in an **elevated**
+PowerShell:
+
+```bash
+ip -4 -o addr show eth0 | awk '{print $4}' | cut -d/ -f1
+```
+
+```powershell
+netsh interface portproxy add v4tov4 listenport=3001 listenaddress=0.0.0.0 connectport=3001 connectaddress=<WSL_IP>
+netsh advfirewall firewall add rule name="Sifar dev 3001" dir=in action=allow protocol=TCP localport=3001 profile=private
+```
+
+Both are required. The portproxy alone is still dropped inbound by Windows
+Firewall. `profile=private` keeps the port closed on networks marked Public —
+but that also means the rule does nothing if Windows has classified the network
+you are on as Public. Either change it to Private, or re-add the rule without
+`profile=private`, which opens the port on every profile.
+
+Check what is currently configured:
+
+```powershell
+netsh interface portproxy show v4tov4
+netsh advfirewall firewall show rule name="Sifar dev 3001"
+```
+
+**Disable.** Elevated PowerShell:
+
+```powershell
+netsh interface portproxy delete v4tov4 listenport=3001 listenaddress=0.0.0.0
+netsh advfirewall firewall delete rule name="Sifar dev 3001"
+```
+
+WSL2 is assigned a new IP on every restart, so after a reboot the proxy points
+at nothing and the phone silently fails again. Delete and re-add it with the
+new IP, or use Option B.
+
+#### Option B — mirrored networking (permanent, no port proxy)
+
+Requires Windows 11 22H2+ and WSL 2.0.0+. WSL shares the Windows network
+interfaces instead of NAT-ing, so a `0.0.0.0` bind is reachable at the LAN
+address directly and the IP stops drifting.
+
+**Enable.** Create or edit `%USERPROFILE%\.wslconfig`:
+
+```ini
+[wsl2]
+networkingMode=mirrored
+```
+
+Then, from PowerShell:
+
+```powershell
+wsl --shutdown
+```
+
+Reopen your WSL terminal. Remove any Option A port proxy first — it is
+unnecessary here and only adds a stale path to debug. You may still need the
+firewall rule from Option A. Because the interface addresses change, regenerate
+the certificate afterwards:
+
+```bash
+SIFAR_CERT_IPS="<new lan ip>" sh web/scripts/gen-cert.sh
+docker compose restart web
+```
+
+**Disable.** Delete the `networkingMode` line from `%USERPROFILE%\.wslconfig`
+(or set `networkingMode=nat`), then `wsl --shutdown` and reopen. If the file
+contains nothing else, deleting it restores every default.
+
+### Turning it all off
+
+After testing, in order:
+
+```bash
+# 1. Back to HTTP
+rm -rf web/certificates/*.pem
+docker compose restart web
+```
+
+```powershell
+# 2. Elevated PowerShell — remove the forward and the opened port
+netsh interface portproxy delete v4tov4 listenport=3001 listenaddress=0.0.0.0
+netsh advfirewall firewall delete rule name="Sifar dev 3001"
+
+# 3. Only if you enabled Option B: drop networkingMode from %USERPROFILE%\.wslconfig
+wsl --shutdown
+```
+
+Then confirm nothing is left listening:
+
+```powershell
+netsh interface portproxy show v4tov4
+```
+
+### If the phone still cannot connect
+
+- **Connection refused / timeout, desktop fine** — Windows is not forwarding.
+  Re-check the port proxy target against the *current* WSL IP.
+- **"Sifar needs a secure connection"** — you reached the server over plain
+  HTTP. Generate a certificate and use the `https://` URL.
+- **Nothing reachable at all** — a host VPN client. Most capture or block LAN
+  traffic; disconnect it and retry.
+- **Certificate warning will not let you proceed** — the address is not in the
+  certificate. Re-run `gen-cert.sh` with the phone-facing IP in
+  `SIFAR_CERT_IPS`.
 
 ## Security Model
 

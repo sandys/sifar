@@ -10,6 +10,13 @@ import {
   requestWebUSBDevice
 } from '@/lib/trezor';
 import { useAppStore } from '@/lib/store';
+import { deriveStep } from '@/lib/wizard';
+import { WalletDisplay } from '@/components/WalletDisplay';
+import { WalletConnectModal } from '@/components/WalletConnectModal';
+import { HomeStep } from '@/components/HomeStep';
+import { UnsupportedScreen } from '@/components/UnsupportedScreen';
+import { useCapabilities } from '@/lib/hooks/useCapabilities';
+import { useDebugTelemetry } from '@/lib/hooks/useDebugTelemetry';
 
 const CONNECTION_TIMEOUT_MS = 60000; // 60 seconds timeout
 
@@ -17,14 +24,15 @@ export function TrezorUsbClient() {
   const trezorConnected = useAppStore((state) => state.trezorConnected);
   const trezorDeviceInfo = useAppStore((state) => state.trezorDeviceInfo);
   const solanaAddress = useAppStore((state) => state.solanaAddress);
-  const activeAccountIndex = useAppStore((state) => state.activeAccountIndex);
+  const solanaAccounts = useAppStore((state) => state.solanaAccounts);
+  const accountChosen = useAppStore((state) => state.accountChosen);
+  const wizardIntent = useAppStore((state) => state.wizardIntent);
+  const activeSessions = useAppStore((state) => state.activeSessions);
   const setPassphraseOnDeviceOnly = useAppStore(
     (state) => state.setPassphraseOnDeviceOnly
   );
   const setTrezorConnected = useAppStore((state) => state.setTrezorConnected);
-  const setTrezorDeviceInfo = useAppStore(
-    (state) => state.setTrezorDeviceInfo
-  );
+  const setTrezorDeviceInfo = useAppStore((state) => state.setTrezorDeviceInfo);
   const setSolanaAccounts = useAppStore((state) => state.setSolanaAccounts);
   const refreshSolanaAccountBalance = useAppStore(
     (state) => state.refreshSolanaAccountBalance
@@ -33,6 +41,7 @@ export function TrezorUsbClient() {
   const openWalletConnectModal = useAppStore(
     (state) => state.openWalletConnectModal
   );
+
   const [loading, setLoading] = useState(false);
   const [enumerating, setEnumerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,6 +50,11 @@ export function TrezorUsbClient() {
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const abortRef = useRef(false);
 
+  const capabilities = useCapabilities();
+  // Records env + state lines for the whole session, not just while the
+  // diagnostics sheet happens to be open.
+  useDebugTelemetry();
+
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
   useEffect(() => {
@@ -48,9 +62,24 @@ export function TrezorUsbClient() {
     return () => setPassphraseOnDeviceOnly(false);
   }, [onDeviceOnly, setPassphraseOnDeviceOnly]);
 
-  const connected = useMemo(
-    () => trezorConnected && !!solanaAddress,
-    [trezorConnected, solanaAddress]
+  const step = useMemo(
+    () =>
+      deriveStep({
+        trezorConnected,
+        accountCount: solanaAccounts.length,
+        accountChosen,
+        solanaAddress,
+        linkedAddresses: activeSessions.map((s) => s.walletAddress),
+        wizardIntent
+      }),
+    [
+      trezorConnected,
+      solanaAccounts.length,
+      accountChosen,
+      solanaAddress,
+      activeSessions,
+      wizardIntent
+    ]
   );
 
   const handleDisconnect = async () => {
@@ -73,6 +102,12 @@ export function TrezorUsbClient() {
     setStatusMessage(null);
   };
 
+  // Distinct from handleDisconnect: this aborts a connect attempt that has not
+  // succeeded yet, so it reads as "Cancel" and is styled as a secondary action.
+  // Disconnecting an established device is a loud, primary-weight action and
+  // lives on Home.
+  const handleCancelConnect = handleDisconnect;
+
   const handleConnect = async () => {
     setError(null);
     setLoading(true);
@@ -93,6 +128,8 @@ export function TrezorUsbClient() {
     }, CONNECTION_TIMEOUT_MS);
 
     try {
+      // Must stay the first await in this handler: Chrome requires
+      // requestDevice() to run inside the click's user-activation window.
       await requestWebUSBDevice();
       if (abortRef.current) return;
       setStatusMessage('Fetching addresses…');
@@ -199,95 +236,104 @@ export function TrezorUsbClient() {
     }
   };
 
-  return (
-    <section className="rounded-3xl border border-amber-200/40 bg-white/70 p-6 shadow-[0_20px_60px_-40px_rgba(0,0,0,0.6)]">
-      <h1 className="font-rakkas text-5xl tracking-wide text-ink">
-        Sifar
-      </h1>
-      <p className="mt-1 font-aref text-lg text-amber-700">
+  // Branding lives in this component rather than in page.tsx: the lint forbids
+  // a large standalone <header> in a page file.
+  const brand = (
+    <header className="text-center">
+      <h1 className="font-rakkas text-4xl leading-none text-ink">Sifar</h1>
+      <p className="mt-1 font-aref text-base text-steel">
         Zero. Your Trezor does everything.
       </p>
-      <p className="mt-4 text-sm text-steel">
-        Connect via USB-OTG, then Sifar steps aside. Passphrase entry happens on
-        your device. Nothing is stored, nothing is trusted.
-      </p>
-        <label className="mt-3 flex items-center gap-2 text-xs text-steel">
-          <input
-            type="checkbox"
-            checked={onDeviceOnly}
-            onChange={(event) => setOnDeviceOnly(event.target.checked)}
-          />
-          Enter passphrase on device only
-        </label>
-        <div className="mt-4 flex items-center gap-3">
-          {connected ? (
-            <button
-              onClick={handleDisconnect}
-              className="rounded-xl border-2 border-red-400 bg-red-50 px-4 py-2 text-sm font-semibold text-red-600 transition hover:bg-red-100"
-            >
-              Disconnect Trezor
-            </button>
-          ) : (
-            <Button onClick={handleConnect} disabled={loading}>
-              {loading ? 'Connecting…' : 'Connect Trezor'}
-            </Button>
-          )}
-          {loading && (
-            <button
-              onClick={handleDisconnect}
-              className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-100"
-            >
-              Cancel
-            </button>
-          )}
-        </div>
-        {loading && (
-          <div className="mt-4">
-            <LoadingSpinner label="Waiting for Trezor…" />
-            <p className="mt-2 text-xs text-steel">
-              Timeout in {Math.round(CONNECTION_TIMEOUT_MS / 1000)}s if device doesn&apos;t respond.
-            </p>
-          </div>
-        )}
-        {!loading && enumerating && (
-          <p className="mt-3 text-xs text-steel">
-            Loading accounts in the background ({progress.scanned} loaded).
+    </header>
+  );
+
+  if (capabilities.hydrated && !capabilities.canSign) {
+    return (
+      <div className="grid gap-6">
+        {brand}
+        <UnsupportedScreen capabilities={capabilities} />
+      </div>
+    );
+  }
+
+  if (step === 'connect') {
+    return (
+      <div className="grid gap-6">
+        {brand}
+        <section className="grid gap-4 rounded-3xl border border-amber-200/50 bg-white/70 p-5">
+          <p className="text-base text-steel">
+            Connect your Trezor over USB-OTG. Sifar never sees a key — the
+            device signs everything.
           </p>
-        )}
-        {error && <p className="mt-3 text-xs text-ember">{error}</p>}
-        {connected && trezorDeviceInfo && (
-          <div className="mt-3 rounded-xl border border-moss/30 bg-moss/10 p-3">
-            <p className="text-xs font-semibold text-moss">Connected</p>
-            <div className="mt-2 grid gap-1 text-xs text-steel">
-              <div><span className="font-medium">Device:</span> {trezorDeviceInfo.label}</div>
-              <div><span className="font-medium">Model:</span> {trezorDeviceInfo.model}</div>
-              <div><span className="font-medium">Firmware:</span> {trezorDeviceInfo.firmwareVersion}</div>
+
+          <label className="flex min-h-[48px] items-center gap-3 text-base text-steel">
+            <input
+              type="checkbox"
+              checked={onDeviceOnly}
+              onChange={(event) => setOnDeviceOnly(event.target.checked)}
+              className="h-6 w-6 rounded border-amber-300"
+            />
+            Enter passphrase on device only
+          </label>
+
+          <Button
+            size="lg"
+            fullWidth
+            onClick={handleConnect}
+            disabled={loading || !capabilities.hydrated}
+          >
+            {loading ? 'Connecting…' : 'Connect Trezor'}
+          </Button>
+
+          {loading && (
+            <>
+              <LoadingSpinner label="Waiting for Trezor…" />
+              <p className="text-sm text-steel">
+                Times out after 60s if the device does not respond.
+              </p>
+              <Button variant="ghost" fullWidth onClick={handleCancelConnect}>
+                Cancel
+              </Button>
+            </>
+          )}
+
+          {enumerating && (
+            <p className="text-sm text-steel">
+              Loading accounts… ({progress.scanned} found)
+            </p>
+          )}
+
+          {error && (
+            <div className="grid gap-2 rounded-2xl border border-red-300 bg-red-50 p-4">
+              <p className="text-sm text-ink">{error}</p>
+              {/* A button, never an auto-retry: requestDevice() must run inside
+                  a real user gesture. */}
+              <Button variant="ghost" onClick={handleConnect}>
+                Try again
+              </Button>
             </div>
-          </div>
-        )}
-        {connected && !trezorDeviceInfo && (
-          <p className="mt-3 text-xs text-moss">Trezor connected.</p>
-        )}
-        {connected && (
-          <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50/70 p-3">
-            <p className="text-xs font-semibold text-blue-800">
-              Sign a WalletConnect request
-            </p>
-            <p className="mt-1 text-[11px] text-steel">
-              Select a WalletConnect URI or QR for the active account. Pairing
-              and session approval do not sign anything. Your Trezor asks for
-              physical confirmation only when the dApp sends a transaction or
-              message signing request.
-            </p>
-            <button
-              type="button"
-              onClick={() => openWalletConnectModal(activeAccountIndex)}
-              className="mt-3 rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-xs font-semibold text-blue-800 transition hover:bg-blue-100"
-            >
-              Open WalletConnect
-            </button>
-          </div>
-        )}
-    </section>
+          )}
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-6">
+      {brand}
+
+      {step === 'accounts' && <WalletDisplay />}
+      {step === 'link' && <WalletConnectModal />}
+      {step === 'home' && (
+        <HomeStep
+          deviceInfo={trezorDeviceInfo}
+          linkLabel="Open WalletConnect"
+          onLinkAnother={() =>
+            openWalletConnectModal(useAppStore.getState().activeAccountIndex)
+          }
+          onDisconnect={handleDisconnect}
+        />
+      )}
+    </div>
   );
 }

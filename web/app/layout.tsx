@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Space_Grotesk, Source_Sans_3, Jomhuria, Rakkas, Aref_Ruqaa } from 'next/font/google';
 import './globals.css';
 import { AppProviders } from './providers';
@@ -38,7 +38,25 @@ const arefRuqaa = Aref_Ruqaa({
 
 export const metadata: Metadata = {
   title: 'Sifar',
-  description: 'Zero-trust WalletConnect bridge. This code does nothing — Trezor does everything.'
+  description: 'Zero-trust WalletConnect bridge. This code does nothing — Trezor does everything.',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'default',
+    title: 'Sifar'
+  }
+};
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  // Deliberately NOT user-scalable:false — pinch-zoom stays available. A wallet
+  // shows addresses and amounts; blocking zoom on those is an accessibility
+  // failure, not a polish win.
+  maximumScale: 5,
+  // Required for env(safe-area-inset-*) to report anything but 0, which the
+  // bottom sheets depend on to clear the home indicator / gesture bar.
+  viewportFit: 'cover',
+  themeColor: [{ media: '(prefers-color-scheme: light)', color: '#f6f1e8' }]
 };
 
 export default function RootLayout({
