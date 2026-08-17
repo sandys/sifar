@@ -6,8 +6,12 @@ web/.next/
 web/out/
 web/dist/
 web/build/
+web/.cache/
 web/.turbo/
 web/.swc/
+web/.vite/
+web/.vitest/
+web/.vercel/
 
 # Generated test output
 web/coverage/
@@ -21,6 +25,7 @@ web/certificates/
 # Local environment and TypeScript caches
 web/.env*
 web/*.tsbuildinfo
+web/.eslintcache
 
 # Tool and OS artifacts
 *.log

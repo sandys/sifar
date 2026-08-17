@@ -3,8 +3,31 @@
 import { Buffer } from 'buffer';
 import TrezorConnect from './trezorConnect';
 import { decodeSolanaPublicKey } from './solanaOffchainMessage';
+import {
+  getDeviceSessionState,
+  shutdownDeviceSession
+} from './deviceSession';
 
 let initPromise: Promise<void> | null = null;
+
+class TrezorDisconnectedError extends Error {
+  constructor() {
+    super('Trezor_Disconnected');
+    this.name = 'TrezorDisconnectedError';
+  }
+}
+
+/**
+ * Defence in depth. The deviceSession arbiter is the real gate — it never
+ * submits an op against a closed gate — but any device entry point still
+ * refuses to run once the session is torn down, so a stray direct call cannot
+ * re-acquire the device behind the arbiter's back.
+ */
+function assertDeviceConnected() {
+  if (getDeviceSessionState().status === 'disconnected') {
+    throw new TrezorDisconnectedError();
+  }
+}
 
 function ensureBuffer() {
   if (typeof globalThis.Buffer === 'undefined') {
@@ -46,6 +69,7 @@ export async function getSolanaAddress(
   accountIndex = 0,
   showOnTrezor = true
 ): Promise<{ address: string; path: string }> {
+  assertDeviceConnected();
   await initTrezor();
 
   const path = `m/44'/501'/${accountIndex}'/0'`;
@@ -68,6 +92,7 @@ export async function signSolanaTransaction(
   serializedTx: Uint8Array,
   derivationPath: string
 ): Promise<{ signature: string }> {
+  assertDeviceConnected();
   await initTrezor();
   ensureBuffer();
 
@@ -89,6 +114,7 @@ export async function signSolanaMessage(
   derivationPath: string,
   signerAddresses: string[]
 ): Promise<{ signature: string; signedData: string }> {
+  assertDeviceConnected();
   await initTrezor();
   ensureBuffer();
 
@@ -112,11 +138,35 @@ export async function signSolanaMessage(
   };
 }
 
+/**
+ * Re-derive an address with `show_display`, so the Trezor prints it and the
+ * user physically confirms before it is shared with anything.
+ *
+ * Enumeration deliberately runs silently — 200 confirmations would be
+ * unusable — so this is the gate for the one address that actually gets
+ * exposed. The returned address is compared against what enumeration found:
+ * a mismatch means the host cannot be trusted about which key it is using, so
+ * it fails closed.
+ */
+export async function confirmSolanaAddressOnDevice(
+  accountIndex: number,
+  expectedAddress: string
+): Promise<void> {
+  const { address } = await getSolanaAddress(accountIndex, true);
+  if (address !== expectedAddress) {
+    throw new TrezorError(
+      `Device returned a different address than enumeration found ` +
+        `(expected ${expectedAddress}, device says ${address}). Refusing to continue.`
+    );
+  }
+}
+
 export async function getTrezorDeviceInfo(): Promise<{
   label: string;
   model: string;
   firmwareVersion: string;
 } | null> {
+  assertDeviceConnected();
   await initTrezor();
 
   const result = await TrezorConnect.getFeatures();
@@ -131,7 +181,12 @@ export async function getTrezorDeviceInfo(): Promise<{
 }
 
 export async function disconnectTrezor(): Promise<void> {
-  await TrezorConnect.dispose();
+  // The arbiter owns teardown now: it closes the gate synchronously, waits out
+  // any in-flight lock (or runs a bounded teardown lock), then disposes the
+  // transport. Clearing initPromise here means the next connect re-runs
+  // TrezorConnect.init rather than reusing a resolved promise for a disposed
+  // transport.
+  await shutdownDeviceSession();
   initPromise = null;
 }
 

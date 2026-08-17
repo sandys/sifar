@@ -95,6 +95,12 @@ class TrezorConnectLike {
   private descriptor: Descriptor | null = null;
   private features: any | null = null;
   private queue: Promise<void> = Promise.resolve();
+  /**
+   * Bumped by dispose(). Work captured under an older generation is abandoned
+   * rather than allowed to re-acquire the device, which is what produced a PIN
+   * prompt half a minute after the user had already disconnected.
+   */
+  private generation = 0;
   private pendingUi: PendingUi | null = null;
   private emitter = new SimpleEmitter();
   private debug =
@@ -176,7 +182,24 @@ class TrezorConnectLike {
     this.initialized = true;
   }
 
+  /** True when a transport is live. Callers use this to avoid re-initializing
+   *  one as a side effect of cleanup. */
+  hasTransport(): boolean {
+    return this.initialized && !!this.transport;
+  }
+
   async dispose() {
+    this.generation += 1;
+    // Release the session rather than only dropping our reference, or the
+    // sessions background keeps it marked as held and the next acquire has to
+    // steal it, forcing a device reset.
+    if (this.transport && this.session) {
+      try {
+        (this.transport as any).releaseSync(this.session);
+      } catch {
+        // Already gone as far as the device is concerned.
+      }
+    }
     this.initPromise = null;
     this.session = null;
     this.descriptor = null;
@@ -333,6 +356,73 @@ class TrezorConnectLike {
     });
   }
 
+  /**
+   * Lock the device, so the next operation touching the seed requires the PIN
+   * again.
+   *
+   * PIN normally unlocks the device, not the operation — once unlocked it
+   * stays unlocked until the device's own auto-lock timer fires, so a host
+   * that has already been through one PIN entry could sign repeatedly without
+   * further authentication. Locking after every logical operation collapses
+   * that window to a single operation.
+   *
+   * `EndSession` additionally drops the cached passphrase session, so a hidden
+   * wallet requires its passphrase again rather than only the PIN.
+   */
+  /**
+   * Forget our session handle so the next call acquires a fresh one.
+   *
+   * EndSession terminates the session device-side. Reusing the handle after
+   * that produces `Failure: Invalid session` on the next command — the device
+   * had already started a PIN prompt, so the lock itself was working; only the
+   * stale handle was wrong.
+   */
+  private dropSession() {
+    if (this.transport && this.session) {
+      try {
+        (this.transport as any).releaseSync(this.session);
+      } catch {
+        // The device may already consider it gone; nulling below is the point.
+      }
+    }
+    this.session = null;
+    this.features = null;
+  }
+
+  async lockDevice(endSession = true): Promise<ConnectResult<null>> {
+    return this.enqueue(async () => {
+      try {
+        if (endSession) {
+          try {
+            await this.callWithUi('EndSession', {});
+          } catch (err: any) {
+            // Older firmware may not implement it; the lock below is the part
+            // that matters.
+            this.log('EndSession unsupported', err?.message);
+          }
+          // Must happen before the next call: EndSession invalidated the
+          // handle, and callWithUi would otherwise reuse it.
+          this.dropSession();
+        }
+
+        const response = await this.callWithUi('LockDevice', {});
+        if (response.type !== 'Success') {
+          throw new Error(`Unexpected response: ${response.type}`);
+        }
+
+        this.log('Device locked');
+        return { success: true, payload: null };
+      } catch (err: any) {
+        return { success: false, payload: { error: err.message || 'Failed' } };
+      } finally {
+        // Whatever happened above, the next operation starts from a clean
+        // session and re-authenticates. ensureSession() re-acquires and
+        // re-Initializes on demand.
+        this.dropSession();
+      }
+    });
+  }
+
   async getFeatures(): Promise<ConnectResult<any>> {
     return this.enqueue(async () => {
       try {
@@ -421,7 +511,18 @@ class TrezorConnectLike {
     name: string,
     data: Record<string, unknown>
   ): Promise<{ type: string; message: any }> {
+    // Captured before any await. A disconnect during the queue wait must not
+    // let this call rebuild a transport and wake the device.
+    const generation = this.generation;
+    if (!this.initialized || !this.transport) {
+      throw new Error('Trezor_Disconnected');
+    }
+
     await this.ensureSession();
+
+    if (generation !== this.generation) {
+      throw new Error('Trezor_Disconnected');
+    }
     if (!this.transport || !this.session) {
       throw new Error('Transport missing');
     }
@@ -429,6 +530,7 @@ class TrezorConnectLike {
     const transport = this.transport as any;
     let hadError = false;
     let retriedAfterFeatures = false;
+    let retriedAfterSession = false;
     let suppressUiError = false;
     try {
       this.log('Call', name);
@@ -466,6 +568,30 @@ class TrezorConnectLike {
 
         if (type === 'Failure') {
           const errorMessage = message?.message || 'Device failure';
+
+          // A session can go stale without us doing anything wrong: the device
+          // auto-locks on its own timer, or another tab acquires it. Nothing
+          // ran on the device in that case, so re-acquiring and re-issuing the
+          // command once is safe and saves the user a dead-end.
+          if (/invalid session/i.test(errorMessage) && !retriedAfterSession) {
+            retriedAfterSession = true;
+            this.log('Invalid session — re-acquiring and retrying', name);
+            this.dropSession();
+            await this.ensureSession();
+            // The last remaining post-dispose re-acquire path: if a disconnect
+            // landed during ensureSession, abandon rather than wake the device.
+            if (generation !== this.generation) {
+              throw new Error('Trezor_Disconnected');
+            }
+            if (!this.session) throw new Error(errorMessage);
+            response = await transport.call({
+              session: this.session,
+              name,
+              data
+            });
+            continue;
+          }
+
           if (message?.code === 7) {
             this.emitUi({ type: 'ui-invalid_pin' });
           }
@@ -567,7 +693,8 @@ class TrezorConnectLike {
           `Trezor rejected the OCMS v1 request schema (firmware ${firmwareVersion}). ` +
           'OCMS v1 requires Core firmware 2.12.4 or newer. Copy the debug log if the device already reports 2.12.4+.';
       }
-      suppressUiError = name === 'SolanaGetAddress';
+      suppressUiError =
+        name === 'SolanaGetAddress' || /Trezor_Disconnected/.test(message);
       if (!suppressUiError) {
         this.emitUi({
           type: 'ui-error',

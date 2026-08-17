@@ -302,36 +302,10 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
             details: `Session proposal from ${params.proposer.metadata.name} (${params.proposer.metadata.url})`,
             rawParams: JSON.stringify({ id, requiredNamespaces: params.requiredNamespaces, optionalNamespaces: params.optionalNamespaces }, null, 2)
           });
-          const autoAddress = store.wcAutoApproveAddress;
-
-          if (autoAddress) {
-            console.log('[WC] Auto-approving with address:', autoAddress);
-            try {
-              const session = await approveSessionProposal(
-                id,
-                autoAddress,
-                params
-              );
-              console.log('[WC] Auto-approval successful, session topic:', session.topic);
-              store.addActiveSession({
-                topic: session.topic,
-                peerName: session.peer.metadata.name,
-                peerUrl: session.peer.metadata.url,
-                peerIcon: session.peer.metadata.icons?.[0],
-                chains: Object.keys(session.namespaces || {}),
-                walletAddress: autoAddress
-              });
-              store.setStatusMessage(
-                `Connected to ${session.peer.metadata.name}.`
-              );
-              store.setWcAutoApproveAddress(null);
-              return;
-            } catch (error) {
-              console.error('[WC] Auto-approval failed:', error);
-              store.setWcAutoApproveAddress(null);
-            }
-          }
-
+          // Every proposal goes to the user. There is deliberately no
+          // auto-approve path: an address is only shared after it has been
+          // confirmed on the device, and a branch that could approve a session
+          // without the user seeing it would defeat that.
           console.log('[WC] Setting pendingProposal for manual approval');
           setPendingProposal({
             id,

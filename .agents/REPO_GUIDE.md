@@ -25,6 +25,7 @@ returned signature are verified.
 - `web/app/providers.tsx` wires WalletConnect events, Trezor UI events, console capture, and URL-state restoration.
 - `web/components/` owns account, WalletConnect proposal/request, hardware prompt, QR-paste, and debug-terminal UI.
 - `web/lib/trezorConnect.ts` is the Connect-like WebUSB client over `@trezor/transport`; `trezor.ts` is its application wrapper.
+- `web/lib/deviceSession.ts` is the arbiter: one FIFO runner (`runDeviceOperation`) through which every logical device op flows, plus a zustand-vanilla store of observable device state. It owns locking (`lockAfter`) and teardown (`shutdownDeviceSession`).
 - `web/lib/trezorMessages.ts` patches the installed protobuf JSON with stable Solana OCMS v1 message definitions.
 - `web/lib/signing.ts` validates WalletConnect requests, selects the matching enumerated hardware path, calls Trezor, and responds.
 - `web/lib/solanaOffchainMessage.ts` and `solanaMessageSigning.ts` serialize OCMS v1 and verify returned bytes and Ed25519 signatures.
@@ -53,6 +54,9 @@ returned signature are verified.
 - `Initialize` answers with `Features` by design; treating that as an interrupted call re-sends `Initialize` and raises a spurious `Unexpected response: Features`.
 - Memoize the in-flight promise for every lazy singleton (`initTrezor`, `TrezorConnect.init`, `initWalletConnect`). A boolean set after the awaits lets concurrent callers each build a transport/wallet, and the loser keeps listening while the winner is used.
 - `ui-close_window` must not fire while a prompt is pending: enumeration queues many calls, and one completing would dismiss a live PIN/passphrase dialog while the device still waits for the answer, blanking the UI until the next Connect.
+- Every logical device operation goes through `runDeviceOperation`; never call the device directly from a component. Enumeration is `exclusive:false` (preemptible), signing and address-confirm are `exclusive:true` (they preempt a running scan). The arbiter locks the device after each op — do not add ad-hoc locks (the removed `lockTrezor` was exactly that mistake, three race bugs deep).
+- Never call `runDeviceOperation` from inside another op's fn: single-flight FIFO deadlocks. Fire-and-forget reads inside an op (e.g. `getTrezorDeviceInfo` during enumeration) stay raw calls, serialized by the wire queue.
+- `requestWebUSBDevice()` must be the first await in the Connect click and must never be wrapped in an op — Chrome needs it inside the user-activation window.
 - WalletConnect `solana_signMessage` supplies raw base58 bytes, while Trezor signs the OCMS v1 domain-separated envelope. Return and verify `signedMessage`; legacy raw-message-only dApps may reject it.
 - Every WalletConnect request must end in a response or a rejection. Clear `pendingRequest` in `finally`, reject on signing failure, and clean up on `session_delete`/`session_request_expire`, or the dApp hangs until expiry.
 - Register WC event handlers via `onWalletConnectReady`, not inside a one-shot init: the wallet is also created lazily by `pairWithDApp` when a Project ID is entered at runtime, and a wallet with no listeners silently swallows every proposal.
@@ -66,6 +70,7 @@ returned signature are verified.
 - The stated design is stateless, but current URL restoration uses `sessionStorage` and WalletConnect maintains SDK storage. Do not claim zero browser persistence until that implementation is removed or redesigned.
 - Generate `web/package-lock.json` with the Node 20/npm 10 Docker toolchain; newer host npm can produce a lock that fails Docker `npm ci` on optional WASM packages.
 - Do not run `next build` while the dev server is using the shared `.next` volume; concurrent writers can leave missing vendor chunks. Stop the service and clean the generated directory first.
+- While the Compose service is running, host `web/.next/` and `web/node_modules/` are live mountpoints for named volumes. Delete them only after `docker compose down -v`; removing either directory from under a running container makes its volume inaccessible.
 - `npm test` skips the real-Trezor Playwright case unless explicitly enabled; physical WebUSB verification still requires chooser and device interaction.
 
 ## Working rules for agents

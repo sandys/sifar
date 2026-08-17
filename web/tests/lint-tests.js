@@ -46,6 +46,34 @@ function runChecks(file, content) {
     );
   }
 
+  if (/useDeviceStore\s*\(\s*\)/.test(content)) {
+    addError(
+      file,
+      'useDeviceStore() without selector; use useDeviceStore((s)=>...) to avoid render loops.'
+    );
+  }
+
+  // lockTrezor is gone — the deviceSession arbiter owns locking (lockAfter).
+  if (/\blockTrezor\s*\(/.test(content)) {
+    addError(
+      file,
+      'lockTrezor is removed; the deviceSession arbiter locks after every op. Do not lock ad hoc.'
+    );
+  }
+
+  // All locking flows through the arbiter. Only deviceSession.ts (the caller)
+  // and trezorConnect.ts (the class method definition) may name lockDevice.
+  if (
+    file !== 'lib/deviceSession.ts' &&
+    file !== 'lib/trezorConnect.ts' &&
+    /TrezorConnect\.lockDevice\s*\(/.test(content)
+  ) {
+    addError(
+      file,
+      'Direct TrezorConnect.lockDevice outside lib/deviceSession.ts; route locking through the arbiter.'
+    );
+  }
+
   // Check for double hex encoding (common mistake with Buffer)
   checkDoubleHexEncoding(file, content);
 
@@ -613,6 +641,93 @@ try {
   }
 } catch (error) {
   addError('web/lib/signing.ts', 'Missing signing.ts for account mismatch lint.');
+}
+
+// ============================================
+// CRITICAL: Hardware gating must not be bypassable
+// ============================================
+// Every address share and every signature is confirmed on the device, and the
+// device is locked afterwards so the next operation needs the PIN again. A
+// silent auto-approve path would defeat both.
+try {
+  const providers = readRepoFile('web/app/providers.tsx');
+  if (/wcAutoApproveAddress|autoApprove/i.test(providers)) {
+    addError(
+      'web/app/providers.tsx',
+      'CRITICAL: No auto-approve path. Every session proposal must reach the user.'
+    );
+  }
+} catch (error) {
+  addError('web/app/providers.tsx', 'Missing providers.tsx for auto-approve lint.');
+}
+
+try {
+  const walletDisplay = readRepoFile('web/components/WalletDisplay.tsx');
+  if (!walletDisplay.includes('confirmSolanaAddressOnDevice')) {
+    addError(
+      'web/components/WalletDisplay.tsx',
+      'CRITICAL: Choosing an account must confirm the address on the device ' +
+      '(confirmSolanaAddressOnDevice) before it can be shared with a dApp.'
+    );
+  }
+  // The confirmation must run through the arbiter, so it preempts a running
+  // scan and the device is locked afterwards.
+  if (!walletDisplay.includes('runDeviceOperation')) {
+    addError(
+      'web/components/WalletDisplay.tsx',
+      'CRITICAL: Address confirmation must run under runDeviceOperation.'
+    );
+  }
+} catch (error) {
+  addError('web/components/WalletDisplay.tsx', 'Missing WalletDisplay for address-gate lint.');
+}
+
+try {
+  const signingSheet = readRepoFile('web/components/SigningSheet.tsx');
+  // Signing goes through the arbiter, which locks the device afterwards so the
+  // next signature needs the PIN again (was: an inline lockTrezor call).
+  if (!signingSheet.includes('runDeviceOperation')) {
+    addError(
+      'web/components/SigningSheet.tsx',
+      'CRITICAL: Signing must run through runDeviceOperation so the arbiter ' +
+      'locks the device afterwards and the next signature requires the PIN.'
+    );
+  }
+} catch (error) {
+  addError('web/components/SigningSheet.tsx', 'Missing SigningSheet for device-lock lint.');
+}
+
+// The arbiter is the single owner of device locking. Verify it implements the
+// lock-after-every-op contract and carries the disconnect signal the UI filters.
+try {
+  const deviceSession = readRepoFile('web/lib/deviceSession.ts');
+  const required = [
+    ['lockAfter', 'every device operation must end with the device locked'],
+    ['TrezorConnect.lockDevice', 'lockAfter must call TrezorConnect.lockDevice (EndSession + LockDevice drops the passphrase session)'],
+    ['lockFailedNonce', 'lock failures must be observable so the UI can warn the device stayed unlocked'],
+    ['Trezor_Disconnected', 'gate-closed rejections must carry Trezor_Disconnected; UI filters match that substring']
+  ];
+  for (const [needle, why] of required) {
+    if (!deviceSession.includes(needle)) {
+      addError('web/lib/deviceSession.ts', `CRITICAL: arbiter missing ${needle} — ${why}.`);
+    }
+  }
+} catch (error) {
+  addError('web/lib/deviceSession.ts', 'Missing deviceSession arbiter module.');
+}
+
+// Enumeration must run under the arbiter too, so a scan is preemptible and
+// disconnect-aware rather than driven by ad-hoc refs.
+try {
+  const client = readRepoFile('web/app/trezor-usb/trezor-usb-client.tsx');
+  if (!client.includes('runDeviceOperation')) {
+    addError(
+      'web/app/trezor-usb/trezor-usb-client.tsx',
+      'CRITICAL: Enumeration must run under runDeviceOperation.'
+    );
+  }
+} catch (error) {
+  addError('web/app/trezor-usb/trezor-usb-client.tsx', 'Missing trezor-usb-client for arbiter lint.');
 }
 
 // Ensure no double Buffer.from().toString('hex') patterns in any file (common mistake).

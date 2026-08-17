@@ -7,6 +7,7 @@ import { Sheet } from '@/components/ui/Sheet';
 import { SigningRequestBody } from '@/components/WalletConnectModal';
 import { TransactionSummary } from '@/components/TransactionSummary';
 import { shortenAddress } from '@/lib/format';
+import { runDeviceOperation } from '@/lib/deviceSession';
 import {
   approveCurrentRequest,
   approveBatchRequest,
@@ -63,19 +64,24 @@ export function SigningSheet() {
     setSigning(true);
     setError(null);
     try {
-      switch (pendingRequest.type) {
-        case 'solana_signMessage':
-          await approveMessageRequest();
-          break;
-        case 'solana_signAllTransactions':
-          await approveBatchRequest();
-          break;
-        case 'solana_signAndSendTransaction':
-          await approveAndSendRequest();
-          break;
-        default:
-          await approveCurrentRequest();
-      }
+      // Exclusive device op. The approve* helpers sign AND respond to the dApp
+      // on the wire, so the whole switch is one logical operation; the arbiter
+      // locks the device after it, so the next signature needs the PIN again.
+      await runDeviceOperation({ label: 'sign', exclusive: true }, async () => {
+        switch (pendingRequest.type) {
+          case 'solana_signMessage':
+            await approveMessageRequest();
+            break;
+          case 'solana_signAllTransactions':
+            await approveBatchRequest();
+            break;
+          case 'solana_signAndSendTransaction':
+            await approveAndSendRequest();
+            break;
+          default:
+            await approveCurrentRequest();
+        }
+      });
       addWcEvent({
         type: 'request_approved',
         peerName: session?.peerName,
@@ -94,7 +100,7 @@ export function SigningSheet() {
         details: `Signing failed: ${err?.message || 'Unknown error'}`
       });
       // The dApp is still blocked on this request id; answer it rather than
-      // letting it time out.
+      // letting it time out. Outside the op, so a gate rejection still answers.
       try {
         await rejectCurrentRequest();
       } catch (rejectErr) {
@@ -102,6 +108,8 @@ export function SigningSheet() {
       }
     } finally {
       setSigning(false);
+      // Locking is owned by the arbiter's lockAfter now; the "did not lock"
+      // toast is a single lockFailedNonce subscriber in ToastHost.
     }
   };
 

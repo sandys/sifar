@@ -74,6 +74,7 @@ web/
 │   └── ui/                    # Primitives
 ├── lib/
 │   ├── trezorConnect.ts       # WebUSB Trezor client
+│   ├── deviceSession.ts       # FIFO device-operation arbiter and lifecycle state
 │   ├── trezorMessages.ts      # Stable-firmware protobuf definitions
 │   ├── walletconnect.ts       # WC v2 wallet
 │   ├── signing.ts             # Request → Trezor → Response

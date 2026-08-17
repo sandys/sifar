@@ -4,6 +4,8 @@ import { useMemo, useState } from 'react';
 import { useAppStore } from '@/lib/store';
 import { Button } from '@/components/ui/Button';
 import { accountLabelFromPath, shortenAddress } from '@/lib/format';
+import { confirmSolanaAddressOnDevice } from '@/lib/trezor';
+import { runDeviceOperation, useDeviceStore } from '@/lib/deviceSession';
 
 /** Shown before "show all" for large enumerations. */
 const INITIAL_VISIBLE = 10;
@@ -15,7 +17,11 @@ const INITIAL_VISIBLE = 10;
  * pages behind two ~26px buttons. Search plus a bounded initial list scales
  * without pagination or a virtualization dependency.
  */
-export function WalletDisplay() {
+export function WalletDisplay({
+  onRescan
+}: {
+  onRescan?: () => void;
+} = {}) {
   const solanaAccounts = useAppStore((state) => state.solanaAccounts);
   const activeAccountIndex = useAppStore((state) => state.activeAccountIndex);
   const activeSessions = useAppStore((state) => state.activeSessions);
@@ -24,6 +30,14 @@ export function WalletDisplay() {
     (state) => state.refreshSolanaAccountBalance
   );
 
+  const setStatus = useAppStore((state) => state.setStatus);
+  const confirmedAddresses = useAppStore((state) => state.confirmedAddresses);
+  const markAddressConfirmed = useAppStore(
+    (state) => state.markAddressConfirmed
+  );
+  const deviceBusy = useDeviceStore((s) => s.activeOp !== null);
+  const [confirmingIndex, setConfirmingIndex] = useState<number | null>(null);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [filterConnected, setFilterConnected] = useState(false);
   const [showAll, setShowAll] = useState(false);
@@ -57,6 +71,57 @@ export function WalletDisplay() {
       });
   }, [solanaAccounts, query, filterConnected, sessionCountByAddress]);
 
+  /**
+   * Choosing an account shows it on the Trezor and waits for a physical
+   * confirmation before anything can be shared with a dApp.
+   *
+   * Enumeration runs silently — 200 confirmations would be unusable — so this
+   * is the point where the address actually gets exposed, and therefore the
+   * point that has to be gated by hardware. The device's answer is compared
+   * against what enumeration reported; a mismatch means the host is lying
+   * about which key it is using, so it fails closed.
+   */
+  const chooseAccount = async (index: number, address: string) => {
+    setConfirmError(null);
+
+    // Already vouched for by the device this session. The address cannot have
+    // changed underneath us, so re-prompting would be noise rather than
+    // security — switching back to an account you already confirmed is free,
+    // and device-free (a background scan, if any, is harmless now: nothing
+    // locks mid-scan under the arbiter).
+    if (confirmedAddresses.includes(address)) {
+      selectAccount(index);
+      setStatus('Switched to a previously confirmed account.');
+      return;
+    }
+
+    setConfirmingIndex(index);
+    setStatus('Confirm the address on your Trezor…');
+    try {
+      // Exclusive: preempts a running enumeration. The scan's lockAfter runs
+      // first, so this confirm hits a locked device → PIN → address confirm.
+      // The arbiter locks again after this op — no manual lock here.
+      await runDeviceOperation(
+        { label: 'confirm-address', exclusive: true },
+        () => confirmSolanaAddressOnDevice(index, address)
+      );
+      markAddressConfirmed(address);
+      selectAccount(index);
+      setStatus('Address confirmed on device.');
+    } catch (err: any) {
+      const message = err?.message || '';
+      // Disconnecting mid-confirmation is a deliberate act, not an error.
+      if (!message.includes('Trezor_Disconnected')) {
+        setConfirmError(
+          message || 'Address was not confirmed on the device.'
+        );
+      }
+      setStatus(null);
+    } finally {
+      setConfirmingIndex(null);
+    }
+  };
+
   const visible = showAll || query.trim() ? matches : matches.slice(0, INITIAL_VISIBLE);
   const hidden = matches.length - visible.length;
 
@@ -72,6 +137,21 @@ export function WalletDisplay() {
           The dApp you link next will be bound to this account. Only it can sign.
         </p>
       </div>
+
+      <p className="rounded-2xl border border-amber-200 bg-white/60 p-3 text-sm text-steel">
+        A new account is shown on the Trezor for you to confirm before it can be
+        shared. Accounts you already confirmed stay confirmed until you
+        disconnect or re-scan.
+      </p>
+
+      {confirmError && (
+        <div className="flex items-start gap-3 rounded-2xl border border-red-300 bg-red-50 p-4">
+          <p className="flex-1 text-sm text-ink">{confirmError}</p>
+          <Button size="sm" variant="ghost" onClick={() => setConfirmError(null)}>
+            Dismiss
+          </Button>
+        </div>
+      )}
 
       <input
         type="search"
@@ -121,8 +201,9 @@ export function WalletDisplay() {
                   a mis-tap generator on touch. */}
               <button
                 type="button"
-                onClick={() => selectAccount(index)}
-                className={`flex min-h-[68px] w-full items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-left transition ${
+                onClick={() => chooseAccount(index, account.address)}
+                disabled={confirmingIndex !== null}
+                className={`flex min-h-[68px] w-full items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-left transition disabled:opacity-60 ${
                   isActive
                     ? 'border-ember bg-white'
                     : 'border-amber-200 bg-white/70 active:bg-white'
@@ -133,6 +214,15 @@ export function WalletDisplay() {
                     <span className="font-mono text-base text-ink">
                       {shortenAddress(account.address)}
                     </span>
+                    {confirmedAddresses.includes(account.address) && (
+                      <span
+                        className="text-moss"
+                        title="Confirmed on device this session"
+                        aria-label="Confirmed on device"
+                      >
+                        ✓
+                      </span>
+                    )}
                     {sessions > 0 && (
                       <span className="rounded-full bg-moss px-2 py-0.5 text-xs font-semibold text-white">
                         {sessions}
@@ -140,7 +230,11 @@ export function WalletDisplay() {
                     )}
                   </span>
                   <span className="mt-0.5 block text-sm text-steel">
-                    {accountLabelFromPath(account.path)}
+                    {confirmingIndex === index
+                      ? 'Confirm on your Trezor…'
+                      : confirmedAddresses.includes(account.address)
+                        ? accountLabelFromPath(account.path)
+                        : `${accountLabelFromPath(account.path)} · needs confirmation`}
                   </span>
                 </span>
                 <span className="shrink-0 text-right">
@@ -172,6 +266,17 @@ export function WalletDisplay() {
       >
         Refresh selected balance
       </Button>
+
+      {onRescan && (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onRescan}
+          disabled={deviceBusy}
+        >
+          Re-scan accounts from device
+        </Button>
+      )}
     </section>
   );
 }

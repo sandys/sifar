@@ -86,7 +86,6 @@ interface AppState {
   trezorDeviceInfo: DeviceInfo | null;
   trezorUiRequest: { type: string; payload?: any } | null;
   passphraseOnDeviceOnly: boolean;
-  wcAutoApproveAddress: string | null;
   wcProjectId: string | null;
   solanaAddress: string | null;
   solanaDerivationPath: string;
@@ -98,6 +97,15 @@ interface AppState {
   accountChosen: boolean;
   /** Explicit wizard navigation, overriding the derived step. */
   wizardIntent: WizardIntent;
+  /**
+   * Addresses the user has physically confirmed on the Trezor this session.
+   *
+   * Confirmation establishes that an address really came from the device. That
+   * fact does not decay while the device stays attached, so re-selecting an
+   * already-confirmed account does not re-prompt. Cleared on disconnect, and on
+   * any re-enumeration, because both mean the device has to vouch again.
+   */
+  confirmedAddresses: string[];
   wcInitialized: boolean;
   appReady: boolean;
   activeSessions: WCSession[];
@@ -113,7 +121,6 @@ interface AppState {
   setTrezorDeviceInfo: (info: DeviceInfo | null) => void;
   setTrezorUiRequest: (request: { type: string; payload?: any } | null) => void;
   setPassphraseOnDeviceOnly: (enabled: boolean) => void;
-  setWcAutoApproveAddress: (address: string | null) => void;
   setWcProjectId: (projectId: string | null) => void;
   setSolanaAddress: (address: string, path: string) => void;
   setSolanaBalance: (balance: number | null) => void;
@@ -121,6 +128,8 @@ interface AppState {
   setSolanaAccounts: (accounts: SolanaAccount[]) => void;
   setActiveAccount: (index: number) => void;
   selectAccount: (index: number) => void;
+  markAddressConfirmed: (address: string) => void;
+  clearConfirmedAddresses: () => void;
   setWizardIntent: (intent: WizardIntent) => void;
   openWalletConnectModal: (index: number) => void;
   setWcInitialized: (initialized: boolean) => void;
@@ -158,7 +167,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
   trezorDeviceInfo: null,
   trezorUiRequest: null,
   passphraseOnDeviceOnly: false,
-  wcAutoApproveAddress: null,
   wcProjectId: process.env.NEXT_PUBLIC_WC_PROJECT_ID || null,
   solanaAddress: null,
   solanaDerivationPath: "m/44'/501'/0'/0'",
@@ -168,6 +176,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   activeAccountIndex: 0,
   accountChosen: false,
   wizardIntent: null,
+  confirmedAddresses: [],
   wcInitialized: false,
   appReady: false,
   activeSessions: [],
@@ -184,7 +193,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setTrezorUiRequest: (request) => set({ trezorUiRequest: request }),
   setPassphraseOnDeviceOnly: (enabled) =>
     set({ passphraseOnDeviceOnly: enabled }),
-  setWcAutoApproveAddress: (address) => set({ wcAutoApproveAddress: address }),
   setWcProjectId: (projectId) => set({ wcProjectId: projectId }),
   setSolanaAddress: (address, path) =>
     set({ solanaAddress: address, solanaDerivationPath: path }),
@@ -206,6 +214,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
         // than stranding the user on a step whose preconditions are gone.
         accountChosen: normalized.length === 0 ? false : state.accountChosen,
         wizardIntent: normalized.length === 0 ? null : state.wizardIntent,
+        confirmedAddresses:
+          normalized.length === 0 ? [] : state.confirmedAddresses,
         solanaAddress: selected?.address ?? null,
         solanaDerivationPath: selected?.path ?? "m/44'/501'/0'/0'",
         solanaBalance: selected?.balance ?? null,
@@ -245,6 +255,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
   },
   setWizardIntent: (intent) => set({ wizardIntent: intent }),
+  markAddressConfirmed: (address) =>
+    set((state) =>
+      state.confirmedAddresses.includes(address)
+        ? state
+        : { confirmedAddresses: [...state.confirmedAddresses, address] }
+    ),
+  clearConfirmedAddresses: () => set({ confirmedAddresses: [] }),
   // Kept under its original name because it is the app's one entry point into
   // the WalletConnect linking surface. It no longer mutates account state as a
   // side effect of opening a panel: it selects, then navigates.
