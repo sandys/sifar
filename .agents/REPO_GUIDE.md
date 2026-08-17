@@ -17,11 +17,14 @@ returned signature are verified.
 - Web test all: `docker compose exec web npm test` — single unit file: `docker compose exec web npx vitest run lib/solanaOffchainMessage.test.ts`.
 - Web lint/typecheck: `docker compose exec web node tests/lint-tests.js && docker compose exec web npm run lint && docker compose exec web npm run typecheck`.
 - Web logs/stop: `docker compose logs -f web` / `docker compose down`.
+- Production image: `docker build -t sifar-railway-smoke .`; deploy the linked service with `railway up --detach`, then inspect `railway logs`.
 - Local HTTPS (needed to test on a phone): `SIFAR_CERT_IPS="<lan ip>" sh web/scripts/gen-cert.sh && docker compose restart web`. openssl runs on the host; the dev image has none.
 - Doc-sync hook (once per clone): `bash .agents/hooks/pre-commit --install`.
 
 ## Architecture
 - `web/app/` is the Next.js App Router; `/trezor-usb` is the direct-WebUSB flow and `/api/solana` proxies JSON-RPC.
+- Root `Dockerfile` emits a non-root Next standalone image; `railway.json` owns Railway's Dockerfile build, V2 runtime, `/api/health` gate, and restart policy.
+- `/api/runtime-config` exposes only the public WalletConnect project ID at runtime; RPC endpoints and credentials stay server-side.
 - `web/app/providers.tsx` wires WalletConnect events, Trezor UI events, console capture, and URL-state restoration.
 - `web/components/` owns account, WalletConnect proposal/request, hardware prompt, QR-paste, and debug-terminal UI.
 - `web/lib/trezorConnect.ts` is the Connect-like WebUSB client over `@trezor/transport`; `trezor.ts` is its application wrapper.
@@ -65,6 +68,7 @@ returned signature are verified.
 - Resolve signing paths from the transaction/message itself and require the signer to equal the requesting session's approved address; never sign from a selected/default path, and never look the signer up across all enumerated accounts. `signing.ts` centralizes this in `resolveTransactionSigner`; `lint-tests.js` enforces it per function, not per file.
 - A locally computed signature check must gate the response: `VersionedTransaction.addSignature`/`serialize` verify nothing, so an unverified signature would otherwise reach the dApp.
 - Balance calls go through `/api/solana`; refresh accounts sequentially with spacing to avoid public-RPC 403/429 responses. Provider URLs carry API keys, so the proxy logs and error bodies must carry the host only, never the URL.
+- Railway uses runtime `WALLETCONNECT_PROJECT_ID`; do not require a build-time `NEXT_PUBLIC_` value or expose `SOLANA_RPC` through `/api/runtime-config`.
 - `api.mainnet-beta.solana.com` is the public mainnet endpoint; `api.mainnet.solana.com` does not resolve and must not be listed as a fallback.
 - Account addresses render eagerly while hardware enumeration continues; balance fetching must not block address discovery.
 - The stated design is stateless, but current URL restoration uses `sessionStorage` and WalletConnect maintains SDK storage. Do not claim zero browser persistence until that implementation is removed or redesigned.

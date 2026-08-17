@@ -42,12 +42,15 @@ async function initTrezor() {
   // transport. The second overwrote the first while the first kept listening,
   // which left the device talking to an orphaned transport.
   if (initPromise) return initPromise;
+  if (typeof window === 'undefined') {
+    throw new Error('Wrong environment');
+  }
 
   ensureBuffer();
   initPromise = TrezorConnect.init({
     manifest: {
       email: 'dev@vaultbridge.io',
-      appUrl: 'https://vaultbridge.io'
+      appUrl: window.location.origin
     },
     debug: process.env.NODE_ENV === 'development'
   });

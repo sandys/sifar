@@ -5,3 +5,11 @@
 **/dist
 **/coverage
 **/*.log
+.agents
+.claude
+web/.env*
+web/certificates
+web/test-results
+web/playwright-report
+web/blob-report
+web/*.tsbuildinfo

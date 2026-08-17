@@ -57,6 +57,9 @@ export async function initWalletConnect(): Promise<IWeb3Wallet> {
   // Memoize the in-flight init: a slow relay handshake used to let a concurrent
   // caller start a second Web3Wallet and orphan the first one's listeners.
   if (initPromise) return initPromise;
+  if (typeof window === 'undefined') {
+    throw new Error('WalletConnect requires a browser environment.');
+  }
 
   const projectId = getProjectId();
   if (!projectId) {
@@ -67,14 +70,15 @@ export async function initWalletConnect(): Promise<IWeb3Wallet> {
     const core = new Core({
       projectId
     }) as any;
+    const appUrl = window.location.origin;
 
     const wallet = await Web3Wallet.init({
       core,
       metadata: {
         name: 'Sifar',
         description: 'Hardware-signed wallet powered by Trezor',
-        url: 'https://vaultbridge.io',
-        icons: ['https://vaultbridge.io/icon.png']
+        url: appUrl,
+        icons: [`${appUrl}/icon.svg`]
       }
     });
 

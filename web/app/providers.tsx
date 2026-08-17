@@ -12,6 +12,7 @@ import {
 import { handleSessionRequest } from '@/lib/signing';
 import { useAppStore } from '@/lib/store';
 import { getStateFromHash, clearStateFromHash } from '@/lib/urlState';
+import { fetchPublicRuntimeConfig } from '@/lib/publicRuntimeConfig';
 
 // Module-level so it survives remounts: handlers must attach exactly once per
 // wallet instance, no matter how many times the provider mounts.
@@ -96,10 +97,6 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       if (envProjectId) {
         setWcProjectId(envProjectId);
         setWalletConnectProjectId(envProjectId);
-      } else {
-        // No project ID available, app is ready immediately
-        // User will need to enter project ID manually
-        setAppReady(true);
       }
     }
   }, [setWcProjectId, setSolanaAccounts, refreshSolanaAccountBalance, setAppReady]);
@@ -405,6 +402,18 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
 
     async function init() {
       if (!hasWalletConnectProjectId()) {
+        try {
+          const runtimeConfig = await fetchPublicRuntimeConfig();
+          if (runtimeConfig.walletConnectProjectId) {
+            setWcProjectId(runtimeConfig.walletConnectProjectId);
+            setWalletConnectProjectId(runtimeConfig.walletConnectProjectId);
+          }
+        } catch (error) {
+          console.warn('[WC] Runtime configuration unavailable:', error);
+        }
+      }
+
+      if (!hasWalletConnectProjectId()) {
         console.warn('[WC] Deferring init: WalletConnect Project ID missing');
         setAppReady(true);
         return;
@@ -428,7 +437,13 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       clearTimeout(timeout);
       detachReadyListener();
     };
-  }, [removeActiveSession, setPendingProposal, setWcInitialized, setAppReady]);
+  }, [
+    removeActiveSession,
+    setPendingProposal,
+    setWcInitialized,
+    setAppReady,
+    setWcProjectId
+  ]);
 
   useEffect(() => {
     const handler = (event: { type: string; payload?: any }) => {

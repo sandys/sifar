@@ -1055,12 +1055,94 @@ try {
   );
 }
 
+// Production deploys use an environment-independent standalone image. Public
+// WalletConnect configuration is injected by the Next server at runtime so a
+// Railway variable change cannot leave a stale value baked into client chunks.
+try {
+  const nextConfig = readRepoFile('web/next.config.js');
+  if (!nextConfig.includes("output: 'standalone'")) {
+    addError(
+      'web/next.config.js',
+      'Production builds must emit Next standalone output for the Railway image.'
+    );
+  }
+  if (nextConfig.includes('https://api.mainnet.solana.com')) {
+    addError(
+      'web/next.config.js',
+      'Do not allow the nonexistent api.mainnet.solana.com RPC endpoint in CSP.'
+    );
+  }
+} catch (error) {
+  addError('web/next.config.js', 'Missing Next production configuration.');
+}
+
+for (const route of [
+  'web/app/api/health/route.ts',
+  'web/app/api/runtime-config/route.ts'
+]) {
+  if (!fileExists(route)) {
+    addError(route, 'Missing Railway runtime route.');
+  }
+}
+
+try {
+  const runtimeRoute = readRepoFile('web/app/api/runtime-config/route.ts');
+  if (!runtimeRoute.includes('WALLETCONNECT_PROJECT_ID')) {
+    addError(
+      'web/app/api/runtime-config/route.ts',
+      'Runtime config must read WALLETCONNECT_PROJECT_ID on the server.'
+    );
+  }
+  if (/SOLANA_RPC|FALLBACK/.test(runtimeRoute)) {
+    addError(
+      'web/app/api/runtime-config/route.ts',
+      'Runtime config must never expose private RPC configuration to the browser.'
+    );
+  }
+} catch (error) {
+  addError(
+    'web/app/api/runtime-config/route.ts',
+    'Missing public runtime configuration route.'
+  );
+}
+
+try {
+  const providers = readRepoFile('web/app/providers.tsx');
+  if (!providers.includes('fetchPublicRuntimeConfig')) {
+    addError(
+      'web/app/providers.tsx',
+      'Providers must load public production configuration at runtime.'
+    );
+  }
+} catch (error) {
+  addError('web/app/providers.tsx', 'Missing runtime configuration bootstrap.');
+}
+
+try {
+  const walletConnect = readRepoFile('web/lib/walletconnect.ts');
+  if (!walletConnect.includes('window.location.origin')) {
+    addError(
+      'web/lib/walletconnect.ts',
+      'WalletConnect metadata must describe the current deployed origin.'
+    );
+  }
+  if (walletConnect.includes('https://vaultbridge.io')) {
+    addError(
+      'web/lib/walletconnect.ts',
+      'Do not publish stale Vault Bridge metadata from a Sifar deployment.'
+    );
+  }
+} catch (error) {
+  addError('web/lib/walletconnect.ts', 'Missing deployment metadata checks.');
+}
+
 const ocmsUnitTests = [
   'web/lib/solanaOffchainMessage.test.ts',
   'web/lib/trezorMessages.test.ts',
   'web/lib/solanaMessageSigning.test.ts',
   'web/lib/walletConnectSolanaMessage.test.ts',
-  'web/lib/walletConnectUri.test.ts'
+  'web/lib/walletConnectUri.test.ts',
+  'web/lib/publicRuntimeConfig.test.ts'
 ];
 for (const file of ocmsUnitTests) {
   if (!fileExists(file)) {

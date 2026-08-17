@@ -57,11 +57,48 @@ docker compose restart web
 docker compose down
 ```
 
+## Railway Deployment
+
+Railway deploys the repository root. `Dockerfile` builds `web/` as a Next.js
+standalone server, and `railway.json` selects that image, enables the V2 runtime,
+and gates rollout on `/api/health`.
+
+The repository is already linked to the Railway service. Set the public
+WalletConnect project ID as a service variable, then deploy from the repository
+root:
+
+```bash
+railway variable set "WALLETCONNECT_PROJECT_ID=<project-id>" --skip-deploys
+railway up --detach
+railway logs
+```
+
+Railway supplies `PORT` and HTTPS. The image listens on `0.0.0.0` and reads
+`WALLETCONNECT_PROJECT_ID` at runtime through `/api/runtime-config`, so changing
+the variable does not require baking it into a browser bundle. That endpoint
+returns only the public WalletConnect ID; `SOLANA_RPC` and
+`SOLANA_RPC_FALLBACKS` remain server-only.
+
+Build and smoke-test the production image locally when changing deploy files:
+
+```bash
+docker build -t sifar-railway-smoke .
+docker run --rm -p 8080:8080 \
+  -e PORT=8080 \
+  -e WALLETCONNECT_PROJECT_ID=test-project-id \
+  sifar-railway-smoke
+curl --fail http://localhost:8080/api/health
+```
+
 ## Architecture
 
 ```
+Dockerfile                       # Multi-stage standalone production image
+railway.json                     # Railway build, health, and restart policy
 web/
 ├── app/
+│   ├── api/health/route.ts    # Railway deployment health check
+│   ├── api/runtime-config/route.ts # Public runtime WC config
 │   ├── api/solana/route.ts    # RPC proxy with fallbacks
 │   ├── layout.tsx             # Root layout
 │   ├── providers.tsx          # WC + Trezor event wiring + URL state restore
@@ -82,6 +119,7 @@ web/
 │   ├── solanaMessageSigning.ts  # signed_data + Ed25519 verification
 │   ├── walletConnectSolanaMessage.ts # WC signer/message validation
 │   ├── solana.ts              # Balance/token queries
+│   ├── publicRuntimeConfig.ts # Browser runtime config loader
 │   ├── store.ts               # Zustand state
 │   ├── urlState.ts            # URL hash persistence
 │   └── hooks/useUrlState.ts   # URL state hook
@@ -120,9 +158,10 @@ confirmation begins only after the dApp sends a signing request.
 ## Environment Variables
 
 ```bash
-NEXT_PUBLIC_WC_PROJECT_ID    # WalletConnect Cloud project ID
-SOLANA_RPC                   # Primary RPC endpoint
-SOLANA_RPC_FALLBACKS         # Comma-separated fallback RPCs
+WALLETCONNECT_PROJECT_ID     # Public WC project ID; preferred on Railway
+NEXT_PUBLIC_WC_PROJECT_ID    # Build/dev fallback for the same public ID
+SOLANA_RPC                   # Server-only primary RPC endpoint
+SOLANA_RPC_FALLBACKS         # Server-only comma-separated fallback RPCs
 ```
 
 ## Browser Requirements
