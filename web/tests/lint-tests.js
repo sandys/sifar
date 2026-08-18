@@ -39,6 +39,13 @@ function addError(file, message) {
 }
 
 function runChecks(file, content) {
+  // Structural checks should inspect code, not prose in comments. A comment
+  // saying "user-activation window" previously triggered the window-global
+  // hydration lint and made the guard report a false regression.
+  const codeOnly = content
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/.*$/gm, '');
+
   if (/useAppStore\s*\(\s*\)/.test(content)) {
     addError(
       file,
@@ -53,16 +60,24 @@ function runChecks(file, content) {
     );
   }
 
-  // lockTrezor is gone — the deviceSession arbiter owns locking (lockAfter).
+  // lockTrezor is gone. Firmware owns normal auth lifetime; only explicit
+  // disconnect may end the session and lock through deviceSession teardown.
   if (/\blockTrezor\s*\(/.test(content)) {
     addError(
       file,
-      'lockTrezor is removed; the deviceSession arbiter locks after every op. Do not lock ad hoc.'
+      'lockTrezor is removed; do not add ad-hoc or per-operation locking.'
     );
   }
 
-  // All locking flows through the arbiter. Only deviceSession.ts (the caller)
-  // and trezorConnect.ts (the class method definition) may name lockDevice.
+  if (/\blockAfter\b|\blockFailedNonce\b|\bpassphraseOnDeviceOnly\b/.test(content)) {
+    addError(
+      file,
+      'Forced per-operation auth state is forbidden. Reuse the firmware session and let device capabilities drive passphrase entry.'
+    );
+  }
+
+  // Explicit teardown flows through the arbiter. Only deviceSession.ts (the
+  // disconnect caller) and trezorConnect.ts (the method) may name lockDevice.
   if (
     file !== 'lib/deviceSession.ts' &&
     file !== 'lib/trezorConnect.ts' &&
@@ -70,7 +85,7 @@ function runChecks(file, content) {
   ) {
     addError(
       file,
-      'Direct TrezorConnect.lockDevice outside lib/deviceSession.ts; route locking through the arbiter.'
+      'Direct TrezorConnect.lockDevice outside lib/deviceSession.ts; only explicit disconnect teardown may lock.'
     );
   }
 
@@ -114,8 +129,8 @@ function runChecks(file, content) {
   }
 
   if (content.includes("'use client'") || content.includes('"use client"')) {
-    const usesWindow = content.includes('window.');
-    const usesNavigator = content.includes('navigator.');
+    const usesWindow = codeOnly.includes('window.');
+    const usesNavigator = codeOnly.includes('navigator.');
     if (usesWindow || usesNavigator) {
       const hasGuard =
         content.includes('typeof window') ||
@@ -646,9 +661,10 @@ try {
 // ============================================
 // CRITICAL: Hardware gating must not be bypassable
 // ============================================
-// Every address share and every signature is confirmed on the device, and the
-// device is locked afterwards so the next operation needs the PIN again. A
-// silent auto-approve path would defeat both.
+// Public-data steps and signing steps must disclose their effects before the
+// action. Firmware owns PIN/passphrase lifetime; the host must not manufacture
+// repeated auth by locking after ordinary operations. A silent auto-approve
+// path would bypass the user's informed decision.
 try {
   const providers = readRepoFile('web/app/providers.tsx');
   if (/wcAutoApproveAddress|autoApprove/i.test(providers)) {
@@ -678,33 +694,49 @@ try {
       'CRITICAL: Address confirmation must run under runDeviceOperation.'
     );
   }
+  if (
+    !walletDisplay.includes('addressVerificationDisclosure') ||
+    !walletDisplay.includes('ActionDisclosureSheet')
+  ) {
+    addError(
+      'web/components/WalletDisplay.tsx',
+      'CRITICAL: A new account must show the not-signing address disclosure before device confirmation.'
+    );
+  }
 } catch (error) {
   addError('web/components/WalletDisplay.tsx', 'Missing WalletDisplay for address-gate lint.');
 }
 
 try {
   const signingSheet = readRepoFile('web/components/SigningSheet.tsx');
-  // Signing goes through the arbiter, which locks the device afterwards so the
-  // next signature needs the PIN again (was: an inline lockTrezor call).
   if (!signingSheet.includes('runDeviceOperation')) {
     addError(
       'web/components/SigningSheet.tsx',
-      'CRITICAL: Signing must run through runDeviceOperation so the arbiter ' +
-      'locks the device afterwards and the next signature requires the PIN.'
+      'CRITICAL: Signing must run through runDeviceOperation.'
+    );
+  }
+  if (
+    !signingSheet.includes('signingRequestDisclosure') ||
+    !signingSheet.includes('ActionDisclosurePanel')
+  ) {
+    addError(
+      'web/components/SigningSheet.tsx',
+      'CRITICAL: Every request sheet must explain that it will sign (and broadcast when applicable) before its CTA.'
     );
   }
 } catch (error) {
-  addError('web/components/SigningSheet.tsx', 'Missing SigningSheet for device-lock lint.');
+  addError('web/components/SigningSheet.tsx', 'Missing SigningSheet for hardware-signing lint.');
 }
 
-// The arbiter is the single owner of device locking. Verify it implements the
-// lock-after-every-op contract and carries the disconnect signal the UI filters.
+// The arbiter serializes normal operations without locking between them. Only
+// shutdown invokes EndSession + LockDevice, and disconnect errors retain the
+// signal the UI filters.
 try {
   const deviceSession = readRepoFile('web/lib/deviceSession.ts');
   const required = [
-    ['lockAfter', 'every device operation must end with the device locked'],
-    ['TrezorConnect.lockDevice', 'lockAfter must call TrezorConnect.lockDevice (EndSession + LockDevice drops the passphrase session)'],
-    ['lockFailedNonce', 'lock failures must be observable so the UI can warn the device stayed unlocked'],
+    ['endAndLock', 'explicit shutdown must end the cached seed session and lock'],
+    ['shutdownDeviceSession', 'disconnect needs one bounded teardown path'],
+    ['TrezorConnect.lockDevice', 'explicit teardown must invoke EndSession + LockDevice'],
     ['Trezor_Disconnected', 'gate-closed rejections must carry Trezor_Disconnected; UI filters match that substring']
   ];
   for (const [needle, why] of required) {
@@ -712,8 +744,112 @@ try {
       addError('web/lib/deviceSession.ts', `CRITICAL: arbiter missing ${needle} — ${why}.`);
     }
   }
+  if (/\blockAfter\b|\blockFailedNonce\b/.test(deviceSession)) {
+    addError(
+      'web/lib/deviceSession.ts',
+      'CRITICAL: Do not restore lock-after-every-operation. Firmware controls authentication lifetime.'
+    );
+  }
 } catch (error) {
   addError('web/lib/deviceSession.ts', 'Missing deviceSession arbiter module.');
+}
+
+try {
+  const connect = readRepoFile('web/lib/trezorConnect.ts');
+  for (const needle of [
+    'deviceSessionId',
+    'session_id',
+    'supportsOnDevicePassphrase',
+    'isLegacyOnDevicePassphraseRequest',
+    'Deprecated_PassphraseStateRequest',
+    'Deprecated_PassphraseStateAck'
+  ]) {
+    if (!connect.includes(needle)) {
+      addError(
+        'web/lib/trezorConnect.ts',
+        `CRITICAL: Firmware-managed auth flow is missing ${needle}.`
+      );
+    }
+  }
+  if (
+    !connect.includes('? { on_device: true }') ||
+    !connect.includes(": { passphrase: passPayload.passphrase ?? '' }")
+  ) {
+    addError(
+      'web/lib/trezorConnect.ts',
+      'PassphraseAck must send either on_device or passphrase, never both.'
+    );
+  }
+  if (/passphrase[^\n]{0,40}\.length|length=[^\n]*passphrase/i.test(connect)) {
+    addError(
+      'web/lib/trezorConnect.ts',
+      'Never log passphrase contents or length; log only the selected entry mode.'
+    );
+  }
+} catch (error) {
+  addError('web/lib/trezorConnect.ts', 'Missing firmware-session implementation.');
+}
+
+try {
+  const prompt = readRepoFile('web/components/TrezorPrompt.tsx');
+  for (const label of [
+    'Continue with Passphrase',
+    'Use No Passphrase',
+    'Enter on Trezor Instead'
+  ]) {
+    if (!prompt.includes(label)) {
+      addError(
+        'web/components/TrezorPrompt.tsx',
+        `Passphrase prompt is missing the explicit "${label}" path.`
+      );
+    }
+  }
+  if (prompt.includes('passphraseOnDeviceOnly')) {
+    addError(
+      'web/components/TrezorPrompt.tsx',
+      'Do not force one passphrase mode; expose only modes supported by firmware.'
+    );
+  }
+} catch (error) {
+  addError('web/components/TrezorPrompt.tsx', 'Missing passphrase UI.');
+}
+
+try {
+  const pairing = readRepoFile('web/components/WalletConnectModal.tsx');
+  if (
+    !pairing.includes('pendingPairing') ||
+    !pairing.includes('walletConnectPairingDisclosure') ||
+    !pairing.includes('ActionDisclosureSheet')
+  ) {
+    addError(
+      'web/components/WalletConnectModal.tsx',
+      'WalletConnect URI validation must stage a not-signing disclosure before pairing starts.'
+    );
+  }
+  const directPastePair = /onClick=\{\(\) => pair\(wcUri\)\}/.test(pairing);
+  if (directPastePair) {
+    addError(
+      'web/components/WalletConnectModal.tsx',
+      'Do not pair directly from paste; validate and show the pairing disclosure first.'
+    );
+  }
+} catch (error) {
+  addError('web/components/WalletConnectModal.tsx', 'Missing pairing disclosure UI.');
+}
+
+try {
+  const proposal = readRepoFile('web/components/ProposalSheet.tsx');
+  if (
+    !proposal.includes('sessionProposalDisclosure') ||
+    !proposal.includes('ActionDisclosurePanel')
+  ) {
+    addError(
+      'web/components/ProposalSheet.tsx',
+      'Session approval must disclose the address, chains, and methods before sharing them.'
+    );
+  }
+} catch (error) {
+  addError('web/components/ProposalSheet.tsx', 'Missing session proposal disclosure UI.');
 }
 
 // Enumeration must run under the arbiter too, so a scan is preemptible and
@@ -724,6 +860,31 @@ try {
     addError(
       'web/app/trezor-usb/trezor-usb-client.tsx',
       'CRITICAL: Enumeration must run under runDeviceOperation.'
+    );
+  }
+  if (
+    !client.includes('accountDiscoveryDisclosure') ||
+    !client.includes('ActionDisclosureSheet')
+  ) {
+    addError(
+      'web/app/trezor-usb/trezor-usb-client.tsx',
+      'Connect and re-scan must show the public-account disclosure first.'
+    );
+  }
+  if (!client.includes('getSolanaAddress(i, false)')) {
+    addError(
+      'web/app/trezor-usb/trezor-usb-client.tsx',
+      'Enumeration must stay silent; only the selected account is displayed on the device.'
+    );
+  }
+  const connectStart = client.indexOf('const handleConnect = async');
+  const connectEnd = client.indexOf('const enumerateAccounts', connectStart);
+  const connectBody = client.slice(connectStart, connectEnd);
+  const firstAwait = connectBody.match(/^\s*await\s+([A-Za-z0-9_]+)/m)?.[1];
+  if (firstAwait !== 'requestWebUSBDevice') {
+    addError(
+      'web/app/trezor-usb/trezor-usb-client.tsx',
+      'requestWebUSBDevice must be the first await after the disclosure CTA so Chrome preserves user activation.'
     );
   }
 } catch (error) {
@@ -1137,9 +1298,13 @@ try {
 }
 
 const ocmsUnitTests = [
+  'web/lib/actionDisclosure.test.ts',
+  'web/lib/deviceSession.test.ts',
   'web/lib/solanaOffchainMessage.test.ts',
+  'web/lib/trezorSession.test.ts',
   'web/lib/trezorMessages.test.ts',
   'web/lib/solanaMessageSigning.test.ts',
+  'web/lib/walletconnect.test.ts',
   'web/lib/walletConnectSolanaMessage.test.ts',
   'web/lib/walletConnectUri.test.ts',
   'web/lib/publicRuntimeConfig.test.ts'

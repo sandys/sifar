@@ -104,14 +104,19 @@ web/
 │   ├── providers.tsx          # WC + Trezor event wiring + URL state restore
 │   └── trezor-usb/            # Direct WebUSB page (/ redirects here)
 ├── components/
-│   ├── WalletConnectModal.tsx # Session + signing UI
-│   ├── WalletDisplay.tsx      # Account list + pagination
+│   ├── ActionDisclosure.tsx  # Pre-action informed-consent UI
+│   ├── WalletConnectModal.tsx # QR/URI pairing UI
+│   ├── ProposalSheet.tsx      # WC address/permission approval
+│   ├── SigningSheet.tsx       # Signing disclosure + review
+│   ├── WalletDisplay.tsx      # Eager account list + search
 │   ├── TrezorPrompt.tsx       # PIN/passphrase prompts
 │   ├── DebugPanel.tsx         # Console capture
 │   └── ui/                    # Primitives
 ├── lib/
 │   ├── trezorConnect.ts       # WebUSB Trezor client
 │   ├── deviceSession.ts       # FIFO device-operation arbiter and lifecycle state
+│   ├── trezorSession.ts       # Firmware session/passphrase capability helpers
+│   ├── actionDisclosure.ts    # Security disclosure copy/model
 │   ├── trezorMessages.ts      # Stable-firmware protobuf definitions
 │   ├── walletconnect.ts       # WC v2 wallet
 │   ├── signing.ts             # Request → Trezor → Response
@@ -134,6 +139,8 @@ web/
 - **WalletConnect v2**: Connect any WC-compatible dApp
 - **Stable OCMS v1**: Solana messages are confirmed and signed on current stable Core firmware
 - **Fail-closed verification**: Firmware `signed_data` and Ed25519 signatures are checked locally before a WalletConnect response
+- **Firmware-managed authentication**: PIN/passphrase prompts follow device state; normal operations reuse the in-memory firmware session and explicit Disconnect ends and locks it
+- **Informed actions**: Every connect, new-address verification, pairing, session approval, and signing action explains whether it signs, what happens, what is shared, and what continuing means
 - **URL State Restoration**: Bookmark URLs restore accounts + modal state
 - **Persistence gap tracked**: URL restoration currently uses transient `sessionStorage`, while WalletConnect maintains SDK storage
 - **Multi-account**: Scan and manage multiple HD accounts
@@ -152,8 +159,17 @@ WalletConnect currently defines `solana_signMessage` as signing its raw base58-d
 After connecting a device at `/trezor-usb`, click **Open WalletConnect** (or an
 account), paste a fresh WalletConnect QR/URI, approve the proposal, and trigger
 the dApp's message request. The pairing URI is a secret connection credential;
-it is validated and expiry-checked but is not itself signed. Hardware
-confirmation begins only after the dApp sends a signing request.
+it is validated and expiry-checked but is not itself signed. Sifar presents a
+separate disclosure before pairing, address sharing, and signing. Hardware
+signing confirmation begins only after the dApp sends a signing request.
+
+PIN and passphrase timing belongs to Trezor firmware. Sifar keeps the opaque
+firmware session ID in memory for the attached browser session, so account
+reads and later signing requests do not force artificial re-authentication.
+The passphrase prompt supports browser entry, an explicit no-passphrase wallet,
+and on-device entry only when the device advertises that capability. The
+passphrase and session ID are never persisted or logged. **Disconnect Trezor**
+ends the firmware session, locks the device, and disposes WebUSB.
 
 ## Environment Variables
 

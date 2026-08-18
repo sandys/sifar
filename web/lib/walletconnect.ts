@@ -125,7 +125,7 @@ const DEFAULT_SOLANA_METHODS = [
   'solana_signAndSendTransaction'
 ];
 
-function collectSolanaRequest(
+export function getSolanaProposalRequest(
   requiredNamespaces?: Record<string, any>,
   optionalNamespaces?: Record<string, any>
 ) {
@@ -135,6 +135,8 @@ function collectSolanaRequest(
 
   const addNamespace = (key: string, ns: any) => {
     if (!ns) return;
+    const isSolana = key === 'solana' || key.startsWith('solana:');
+    if (!isSolana) return;
     if (key.includes(':')) {
       const [namespace] = key.split(':');
       if (namespace === 'solana') {
@@ -196,7 +198,7 @@ export async function approveSessionProposal(
     throw new Error('Session proposal has expired. Please try connecting again.');
   }
 
-  const solanaRequest = collectSolanaRequest(
+  const solanaRequest = getSolanaProposalRequest(
     requiredNamespaces,
     optionalNamespaces
   );

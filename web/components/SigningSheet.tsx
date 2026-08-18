@@ -8,6 +8,8 @@ import { SigningRequestBody } from '@/components/WalletConnectModal';
 import { TransactionSummary } from '@/components/TransactionSummary';
 import { shortenAddress } from '@/lib/format';
 import { runDeviceOperation } from '@/lib/deviceSession';
+import { ActionDisclosurePanel } from '@/components/ActionDisclosure';
+import { signingRequestDisclosure } from '@/lib/actionDisclosure';
 import {
   approveCurrentRequest,
   approveBatchRequest,
@@ -58,15 +60,26 @@ export function SigningSheet() {
     }
   }, [pendingRequest]);
 
-  if (!pendingRequest || !summary) return null;
+  const disclosure = useMemo(
+    () =>
+      pendingRequest
+        ? signingRequestDisclosure({
+            type: pendingRequest.type,
+            transactionCount: pendingRequest.transactions?.length
+          })
+        : null,
+    [pendingRequest]
+  );
+
+  if (!pendingRequest || !summary || !disclosure) return null;
 
   const approve = async () => {
     setSigning(true);
     setError(null);
     try {
       // Exclusive device op. The approve* helpers sign AND respond to the dApp
-      // on the wire, so the whole switch is one logical operation; the arbiter
-      // locks the device after it, so the next signature needs the PIN again.
+      // on the wire, so the whole switch is one logical operation. Firmware
+      // decides whether the current in-memory auth session needs more input.
       await runDeviceOperation({ label: 'sign', exclusive: true }, async () => {
         switch (pendingRequest.type) {
           case 'solana_signMessage':
@@ -108,8 +121,6 @@ export function SigningSheet() {
       }
     } finally {
       setSigning(false);
-      // Locking is owned by the arbiter's lockAfter now; the "did not lock"
-      // toast is a single lockFailedNonce subscriber in ToastHost.
     }
   };
 
@@ -144,7 +155,7 @@ export function SigningSheet() {
       footer={
         <div className="grid gap-2">
           <Button size="lg" fullWidth onClick={approve} disabled={signing}>
-            {signing ? 'Waiting for Trezor…' : 'Sign with Trezor'}
+            {signing ? 'Waiting for Trezor…' : disclosure.primaryLabel}
           </Button>
           <Button variant="ghost" fullWidth onClick={reject} disabled={signing}>
             {signing ? 'Cancel' : 'Reject'}
@@ -153,8 +164,8 @@ export function SigningSheet() {
       }
     >
       <div className="grid gap-3">
-        {/* Deliberately the first thing in the sheet, and never styled quieter
-            than the decoded values below it. */}
+        <ActionDisclosurePanel disclosure={disclosure} />
+
         <p className="rounded-2xl border border-amber-300 bg-amber-50 p-3 text-sm text-ink">
           This summary is advisory. The Trezor screen is what you are signing.
         </p>

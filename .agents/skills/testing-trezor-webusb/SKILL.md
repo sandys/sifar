@@ -51,8 +51,11 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
 
 5. Ask the human to unlock the latest-stable Core device, open
    `localhost:3001/trezor-usb` in Chrome/Edge, click **Connect Trezor**,
-   select the device in Chrome's chooser, and complete PIN/passphrase prompts.
-   WebUSB permission and physical confirmations cannot be bypassed.
+   review the **Not signing** account-discovery disclosure, select the device
+   in Chrome's chooser, and complete any PIN/passphrase prompt firmware asks
+   for. WebUSB permission and physical confirmations cannot be bypassed. Normal
+   operations should then reuse the in-memory firmware session; repeated
+   host-forced passphrase gates are a regression.
 6. Verify addresses appear eagerly while enumeration continues. Balance/RPC
    errors are separate from hardware derivation and must display per-account
    failure without hiding valid addresses.
@@ -120,12 +123,14 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
    shutting down again. Remove any Option A proxy first, and regenerate the
    certificate afterwards because the addresses change.
 
-8. Click **Open WalletConnect** or select an account, then paste a fresh `wc:`
-   URI or QR. The URI pairs the dApp and is not itself signed. Approve the
-   session, trigger a `solana_signMessage` request in the dApp, click **Sign with
-   Trezor**, inspect the message on-device, and confirm it physically. Require
-   the debug terminal to report local OCMS byte and Ed25519 verification before
-   the response is sent.
+8. Select an unconfirmed account and verify that its disclosure shows the full
+   address/path before the Trezor displays it. Click **Open WalletConnect**, then
+   paste a fresh `wc:` URI or QR. Verify the pairing disclosure says **Not
+   signing**, the proposal disclosure names the address/chains/methods, and the
+   request disclosure says **Will sign** (or **Will sign and broadcast**).
+   Trigger `solana_signMessage`, use its disclosure CTA, inspect the message
+   on-device, and confirm physically. Require the debug terminal to report local
+   OCMS byte and Ed25519 verification before the response is sent.
 9. If it fails, copy the debug terminal with its Copy button. Trace the sequence
    through `[Sifar] Call`, response type, UI request/response, returned
    `signed_data`, and local verification. Never log the entered passphrase.
@@ -134,9 +139,12 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
    ```bash
    docker compose exec web npx vitest run \
      lib/trezorMessages.test.ts \
+     lib/trezorSession.test.ts \
+     lib/actionDisclosure.test.ts \
      lib/solanaOffchainMessage.test.ts \
      lib/solanaMessageSigning.test.ts \
      lib/walletConnectSolanaMessage.test.ts \
+     lib/walletconnect.test.ts \
      lib/walletConnectUri.test.ts
    ```
 
@@ -178,6 +186,14 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
   happens until I click Connect again") means the prompt was emitted and then
   cleared. Look for `ui-close_window` immediately after `ui-request_passphrase`
   in the debug log, or a duplicate transport from an unmemoized init.
+- PIN/passphrase appearing after every read or signature means the host has
+  discarded `Features.session_id` or restored per-operation locking. Resume the
+  opaque ID through `Initialize`; only explicit Disconnect may send
+  `EndSession` + `LockDevice`. Never log the ID, passphrase, or passphrase length.
+- An on-device passphrase button on unsupported hardware means capability
+  detection regressed. Gate it on `Capability_PassphraseEntry`; a legacy
+  `PassphraseRequest._on_device=true` is an immediate empty ack, not a browser
+  choice. Browser entry and **Use No Passphrase** remain explicit alternatives.
 - `Forbidden key path` during address enumeration marks unsupported path range;
   it must stop background enumeration without replacing an active signing UI
   with an error prompt.
@@ -217,6 +233,8 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
 - Docker is healthy and `/trezor-usb` returns HTTP 200.
 - Lint, typecheck, full tests, focused OCMS tests, and build pass.
 - The intended hardware address/path is displayed from the physical device.
+- Every consequential pre-action disclosure states signing status, data shared,
+  effect, and agreement before its CTA.
 - A real WalletConnect message request receives physical OCMS v1 confirmation,
   exact expected bytes, and a locally verified Ed25519 signature.
 - Any remaining WalletConnect incompatibility is identified separately from

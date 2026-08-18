@@ -1,4 +1,4 @@
-import { createStore, type StoreApi } from 'zustand/vanilla';
+import { createStore } from 'zustand/vanilla';
 import { useStore } from 'zustand';
 import TrezorConnect from './trezorConnect';
 
@@ -13,11 +13,9 @@ import TrezorConnect from './trezorConnect';
  *
  * Two hard rules encoded here:
  *
- *  - Every operation ends with the device LOCKED (EndSession + LockDevice,
- *    which also drops the passphrase session). The op slot spans fn + lock, so
- *    nothing can interleave between an operation finishing and the device
- *    locking. This is the security model: the next operation needs the PIN
- *    again rather than riding an already-unlocked session.
+ *  - Authentication belongs to firmware. Operations share the current
+ *    in-memory device session, so the Trezor asks for PIN/passphrase only when
+ *    its own state requires it. Explicit Disconnect ends and locks the session.
  *
  *  - Never call runDeviceOperation from inside another op's fn. Single-flight
  *    FIFO makes that an instant deadlock. Fire-and-forget device reads inside
@@ -37,15 +35,11 @@ export interface DeviceSessionState {
   status: DeviceStatus;
   activeOp: ActiveOp | null;
   queuedOps: number;
-  /** Monotonic; bumped whenever a lockAfter fails. Never reset. */
-  lockFailedNonce: number;
 }
 
 export interface RunOpts {
   label: string;
   exclusive: boolean;
-  /** Lock the device after the op settles. Default true — the security model. */
-  lockAfter?: boolean;
   /** Join an in-flight/queued op with the same label instead of enqueuing. */
   coalesce?: boolean;
 }
@@ -55,21 +49,19 @@ export interface OpContext {
 }
 
 export interface DeviceSessionDeps {
-  lock: () => Promise<{ success: boolean }>;
+  endAndLock: () => Promise<{ success: boolean }>;
   dispose: () => Promise<void>;
 }
 
 /** Carried on rejections so the UI can tell "you disconnected" from a real error. */
 export const DISCONNECTED = 'Trezor_Disconnected';
 
-const SKIP_LOCK_ON_REJECT = /Trezor_Disconnected|Transport_Missing/;
 const TEARDOWN_LOCK_TIMEOUT_MS = 3000;
 
 interface QueueEntry {
   id: number;
   label: string;
   exclusive: boolean;
-  lockAfter: boolean;
   fn: (ctx: OpContext) => Promise<unknown>;
   controller: AbortController;
   /** True when closeDeviceGate aborted this entry (vs. a preemption abort). */
@@ -84,8 +76,7 @@ export function createDeviceSession(deps: DeviceSessionDeps) {
   const store = createStore<DeviceSessionState>(() => ({
     status: 'disconnected',
     activeOp: null,
-    queuedOps: 0,
-    lockFailedNonce: 0
+    queuedOps: 0
   }));
 
   // Non-serializable internals live here, not in the store: they carry no
@@ -94,7 +85,7 @@ export function createDeviceSession(deps: DeviceSessionDeps) {
   let active: QueueEntry | null = null;
   let idCounter = 0;
   let pumping = false;
-  let lockInFlight: Promise<void> | null = null;
+  let shutdownInFlight: Promise<void> | null = null;
 
   const setQueuedCount = () => store.setState({ queuedOps: queue.length });
 
@@ -158,7 +149,6 @@ export function createDeviceSession(deps: DeviceSessionDeps) {
       id: ++idCounter,
       label: opts.label,
       exclusive: opts.exclusive,
-      lockAfter: opts.lockAfter ?? true,
       fn: fn as (ctx: OpContext) => Promise<unknown>,
       controller: new AbortController(),
       abortedByGate: false,
@@ -170,9 +160,8 @@ export function createDeviceSession(deps: DeviceSessionDeps) {
     queue.push(entry);
     setQueuedCount();
 
-    // An exclusive op preempts a running preemptible one. Abort it; the pump's
-    // normal settle → lockAfter → next-op flow does the rest, so the preempted
-    // op's device state is still locked before this one starts.
+    // An exclusive op preempts a running preemptible one. The pump still waits
+    // for the aborted operation to settle before starting the exclusive work.
     if (entry.exclusive && active && !active.exclusive) {
       active.controller.abort();
     }
@@ -213,12 +202,8 @@ export function createDeviceSession(deps: DeviceSessionDeps) {
           }
         }
 
-        // Resolve the caller now — the lock runs in the background; no caller
-        // ever depended on the lock completing.
         if (rejected) entry.reject(rejection);
         else entry.resolve(settledValue);
-
-        await maybeLockAfter(entry, rejected, rejection);
 
         active = null;
         store.setState({ activeOp: null });
@@ -228,60 +213,31 @@ export function createDeviceSession(deps: DeviceSessionDeps) {
     }
   }
 
-  async function maybeLockAfter(
-    entry: QueueEntry,
-    rejected: boolean,
-    rejection: unknown
-  ) {
-    if (!entry.lockAfter) return;
-    // Gate closed: shutdown owns teardown; do not lock here.
-    if (store.getState().status === 'disconnected') return;
-    if (rejected) {
-      const message = (rejection as any)?.message ?? '';
-      if (SKIP_LOCK_ON_REJECT.test(message)) return;
-    }
-
-    const p = (async () => {
-      try {
-        const result = await deps.lock();
-        if (!result.success) {
-          store.setState((s) => ({ lockFailedNonce: s.lockFailedNonce + 1 }));
-        }
-      } catch {
-        store.setState((s) => ({ lockFailedNonce: s.lockFailedNonce + 1 }));
-      }
-    })();
-    lockInFlight = p;
-    try {
-      await p;
-    } finally {
-      if (lockInFlight === p) lockInFlight = null;
-    }
-  }
-
-  async function shutdownDeviceSession() {
+  function shutdownDeviceSession() {
+    if (shutdownInFlight) return shutdownInFlight;
     closeDeviceGate();
 
-    // Avoid a double lock: if an op's lockAfter is already on the wire, let it
-    // finish and skip the teardown lock. Otherwise run one teardown lock,
-    // bounded so a stuck wire call can't hang disconnect forever.
-    const pending = lockInFlight;
-    if (pending) {
-      await pending.catch(() => {});
-    } else {
+    const shutdown = (async () => {
+      // TrezorConnect serializes wire calls, so this queues behind any command
+      // already on USB. Bound teardown so a removed/stuck device cannot hang
+      // the Disconnect action forever.
       await Promise.race([
-        deps.lock().catch(() => ({ success: false })),
+        deps.endAndLock().catch(() => ({ success: false })),
         new Promise((r) => setTimeout(r, TEARDOWN_LOCK_TIMEOUT_MS))
       ]);
-    }
 
-    await deps.dispose().catch(() => {});
+      await deps.dispose().catch(() => {});
 
-    // Reset so a later openDeviceGate() starts from a clean queue.
-    queue.length = 0;
-    active = null;
-    lockInFlight = null;
-    setQueuedCount();
+      // Reset so a later openDeviceGate() starts from a clean queue.
+      queue.length = 0;
+      active = null;
+      setQueuedCount();
+    })();
+
+    shutdownInFlight = shutdown;
+    return shutdown.finally(() => {
+      if (shutdownInFlight === shutdown) shutdownInFlight = null;
+    });
   }
 
   return {
@@ -296,14 +252,17 @@ export function createDeviceSession(deps: DeviceSessionDeps) {
 
 // --- Wired singleton -------------------------------------------------------
 
-const wiredLock = () =>
+const wiredEndAndLock = () =>
   TrezorConnect.hasTransport()
     ? TrezorConnect.lockDevice().then((r) => ({ success: r.success }))
     : Promise.resolve({ success: true });
 
 const wiredDispose = () => TrezorConnect.dispose();
 
-const session = createDeviceSession({ lock: wiredLock, dispose: wiredDispose });
+const session = createDeviceSession({
+  endAndLock: wiredEndAndLock,
+  dispose: wiredDispose
+});
 
 export const {
   openDeviceGate,

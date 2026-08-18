@@ -184,11 +184,9 @@ export async function getTrezorDeviceInfo(): Promise<{
 }
 
 export async function disconnectTrezor(): Promise<void> {
-  // The arbiter owns teardown now: it closes the gate synchronously, waits out
-  // any in-flight lock (or runs a bounded teardown lock), then disposes the
-  // transport. Clearing initPromise here means the next connect re-runs
-  // TrezorConnect.init rather than reusing a resolved promise for a disposed
-  // transport.
+  // The arbiter closes the gate synchronously, ends the firmware session,
+  // locks, then disposes transport. Clearing initPromise means the next connect
+  // cannot reuse a resolved promise for a disposed transport.
   await shutdownDeviceSession();
   initPromise = null;
 }

@@ -68,9 +68,6 @@ function PinPad({
 
 export function TrezorPrompt() {
   const trezorUiRequest = useAppStore((state) => state.trezorUiRequest);
-  const passphraseOnDeviceOnly = useAppStore(
-    (state) => state.passphraseOnDeviceOnly
-  );
   const setTrezorUiRequest = useAppStore((state) => state.setTrezorUiRequest);
   const [pin, setPin] = useState('');
   const [passphrase, setPassphrase] = useState('');
@@ -128,11 +125,10 @@ export function TrezorPrompt() {
     setPin('');
   };
 
-  const submitPassphrase = () => {
-    if (!passphrase) return;
+  const submitPassphrase = (value: string) => {
     TrezorConnect.uiResponse({
       type: 'ui-receive_passphrase',
-      payload: { passphrase }
+      payload: { passphrase: value }
     });
     setTrezorUiRequest(null);
     setPassphrase('');
@@ -178,85 +174,70 @@ export function TrezorPrompt() {
     );
   } else if (type === 'ui-request_passphrase') {
     const allowOnDevice = trezorUiRequest?.payload?.onDeviceAllowed;
-
-    if (passphraseOnDeviceOnly && !allowOnDevice) {
-      body = (
-        <p className="text-sm text-ember">
-          This device does not allow on-device passphrase entry. Disconnect and
-          disable passphrase, or use a supported model.
-        </p>
-      );
-      footer = (
-        <Button variant="ghost" fullWidth onClick={handleCancel}>
-          Close
-        </Button>
-      );
-    } else if (passphraseOnDeviceOnly) {
-      body = (
-        <p className="text-sm text-steel">
-          Enter your passphrase directly on the Trezor device.
-        </p>
-      );
-      footer = (
-        <div className="grid gap-2">
-          <Button size="lg" fullWidth onClick={submitOnDevice}>
-            Continue on Device
-          </Button>
-          <Button variant="ghost" fullWidth onClick={handleCancel}>
-            Cancel
-          </Button>
-        </div>
-      );
-    } else {
-      body = (
-        <form
-          className="grid gap-4"
-          onSubmit={(event) => {
-            event.preventDefault();
-            submitPassphrase();
-          }}
-        >
-          <p className="text-sm text-steel">
-            Enter your passphrase, or type it directly on the device.
+    body = (
+      <form
+        className="grid gap-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (passphrase) submitPassphrase(passphrase);
+        }}
+      >
+        <div className="grid gap-2 text-sm text-steel">
+          <p>
+            A passphrase selects a wallet on your Trezor. A different value
+            opens a different wallet, so enter it exactly.
           </p>
-          <input
-            type="password"
-            autoComplete="off"
-            autoCapitalize="none"
-            autoCorrect="off"
-            spellCheck={false}
-            className="min-h-[48px] w-full rounded-2xl border border-amber-100 bg-white px-4 text-ink"
-            value={passphrase}
-            onChange={(event) => setPassphrase(event.target.value)}
-            placeholder="Passphrase"
-          />
-          {/* Submit lives here too so the on-screen keyboard's Go key works. */}
-          <button type="submit" className="sr-only" tabIndex={-1}>
-            Submit Passphrase
-          </button>
-        </form>
-      );
-      footer = (
-        <div className="grid gap-2">
-          <Button
-            size="lg"
-            fullWidth
-            onClick={submitPassphrase}
-            disabled={!passphrase}
-          >
-            Submit Passphrase
-          </Button>
-          {allowOnDevice && (
-            <Button variant="ghost" fullWidth onClick={submitOnDevice}>
-              Enter on Device
-            </Button>
-          )}
-          <Button variant="ghost" fullWidth onClick={handleCancel}>
-            Cancel
-          </Button>
+          <p>
+            Browser entry is sent only to this attached Trezor over USB. Sifar
+            clears it immediately and never sends it to a dApp, WalletConnect,
+            an RPC provider, logs, or storage.
+          </p>
         </div>
-      );
-    }
+        <input
+          type="password"
+          autoComplete="off"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          autoFocus
+          className="min-h-[48px] w-full rounded-2xl border border-amber-100 bg-white px-4 text-ink"
+          value={passphrase}
+          onChange={(event) => setPassphrase(event.target.value)}
+          placeholder="Passphrase"
+        />
+        {/* Submit lives here too so the on-screen keyboard's Go key works. */}
+        <button type="submit" className="sr-only" tabIndex={-1}>
+          Submit Passphrase
+        </button>
+      </form>
+    );
+    footer = (
+      <div className="grid gap-2">
+        <Button
+          size="lg"
+          fullWidth
+          onClick={() => submitPassphrase(passphrase)}
+          disabled={!passphrase}
+        >
+          Continue with Passphrase
+        </Button>
+        <Button
+          variant="ghost"
+          fullWidth
+          onClick={() => submitPassphrase('')}
+        >
+          Use No Passphrase
+        </Button>
+        {allowOnDevice && (
+          <Button variant="ghost" fullWidth onClick={submitOnDevice}>
+            Enter on Trezor Instead
+          </Button>
+        )}
+        <Button variant="ghost" fullWidth onClick={handleCancel}>
+          Cancel
+        </Button>
+      </div>
+    );
   } else if (type === 'ui-select_device') {
     const devices = trezorUiRequest?.payload?.devices || [];
     body = (

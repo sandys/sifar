@@ -52,11 +52,11 @@ Desktop dApp (jup.ag) ── WalletConnect ──> Vault Bridge (mobile web)
 
 ### 4.2 Session Flow
 1. dApp shows QR
-2. Vault Bridge scans QR
-3. Pair via WalletConnect
-4. User approves session
+2. Vault Bridge scans QR and explains that pairing is not signing
+3. User starts the WalletConnect pairing
+4. Vault Bridge shows the requested address, chains, and methods; user approves the session
 5. dApp sends signing requests
-6. Vault Bridge shows preview + prompts Trezor
+6. Vault Bridge clearly labels the request as signing (and broadcasting when applicable), shows what is shared, then prompts Trezor
 7. Trezor signs and returns signature
 
 ## 5. Trezor Integration (Direct WebUSB)
@@ -66,8 +66,11 @@ Desktop dApp (jup.ag) ── WalletConnect ──> Vault Bridge (mobile web)
 - Manage sessions with `transport.init()` → `transport.listen()` → `enumerate()` → `acquire()`.
 - Implement the full **UI flow** in‑app:
   - `PinMatrixRequest` → show PIN matrix → `PinMatrixAck`
-  - `PassphraseRequest` → prompt for passphrase / on‑device option → `PassphraseAck`
+  - `PassphraseRequest` → browser entry or explicit no-passphrase; offer on-device entry only when `Capability_PassphraseEntry` is present → `PassphraseAck`
   - `ButtonRequest` → show “Confirm on device” → `ButtonAck`
+- Preserve the firmware `Features.session_id` in memory and send it on later `Initialize` calls so firmware controls PIN/passphrase lifetime. Do not lock after normal reads, address confirmations, or signatures.
+- Explicit Disconnect sends `EndSession`, then `LockDevice`, and disposes WebUSB. It clears the in-memory firmware session ID.
+- Support legacy `_on_device` and deprecated passphrase-state acknowledgement handshakes without persisting or logging their state.
 - No Trezor-hosted iframe/popup is used anywhere.
 
 ### 5.1 Stable Solana Off-Chain Message Signing
@@ -108,6 +111,10 @@ removed or replaced with a truly in-memory flow.
 ```
 web/
 ├── app/
+│   ├── api/
+│   │   ├── health/route.ts
+│   │   ├── runtime-config/route.ts
+│   │   └── solana/route.ts
 │   ├── layout.tsx
 │   ├── page.tsx
 │   ├── trezor-usb/
@@ -116,22 +123,30 @@ web/
 │   ├── globals.css
 │   └── providers.tsx
 ├── components/
+│   ├── ActionDisclosure.tsx
 │   ├── WalletConnectModal.tsx
 │   ├── WalletDisplay.tsx
 │   ├── TrezorPrompt.tsx
-│   ├── SessionApproval.tsx
+│   ├── ProposalSheet.tsx
+│   ├── SigningSheet.tsx
+│   ├── TransactionSummary.tsx
 │   ├── DebugPanel.tsx
 │   ├── LoadingOverlay.tsx
 │   └── ui/
 │       ├── Button.tsx
 │       ├── Card.tsx
-│       ├── Sheet.tsx
-│       └── Toast.tsx
+│       └── Sheet.tsx
 ├── lib/
+│   ├── actionDisclosure.ts
+│   ├── deviceSession.ts
 │   ├── trezor.ts
 │   ├── trezorConnect.ts
+│   ├── trezorSession.ts
+│   ├── trezorMessages.ts
 │   ├── walletconnect.ts
 │   ├── solana.ts
+│   ├── solanaOffchainMessage.ts
+│   ├── solanaMessageSigning.ts
 │   ├── signing.ts
 │   ├── store.ts
 │   └── constants.ts
@@ -148,7 +163,10 @@ web/
 - **Never store keys or seeds**
 - **Never modify transactions**
 - **Always fail closed** on unknown methods
-- **Show warnings**: “Verify on Trezor” before approval
+- **Disclose every consequential step before its CTA**: connect/re-scan, first-time account verification, WalletConnect pairing, session approval, and every signing request
+- Each disclosure must explicitly say **Not signing**, **Will sign**, or **Will sign and broadcast**, what happens, what is shared, and what continuing means
+- Address discovery is silent; the newly selected account is displayed and physically verified once per attached/re-scanned session before it can be shared
+- Do not force host-side PIN/passphrase gates between operations; follow firmware authentication and always require the device's physical signing confirmation
 
 ## 9. Error Handling
 
@@ -158,7 +176,7 @@ web/
 | No camera permission | Allow camera access | Retry |
 | Trezor not detected | Connect via USB‑OTG | Retry |
 | PIN required | Show PIN matrix | Submit |
-| Passphrase required | Passphrase prompt | Submit or on‑device |
+| Passphrase required | Explain wallet selection | Browser entry, no passphrase, or capability-gated on-device entry |
 | User cancels prompt | “Cancelled” | Return to connect |
 | WC pairing fails | QR expired | Rescan |
 | Signing rejected | Rejected on device | Return to home |
@@ -189,7 +207,7 @@ NEXT_PUBLIC_SOLANA_RPC=https://api.mainnet-beta.solana.com
 
 1. Android + Chrome only
 2. WebUSB requires a manual device chooser prompt on first connect
-3. Custom UI must handle PIN/passphrase/confirm flows
+3. Custom UI must handle firmware-driven PIN/passphrase/confirm flows and resume the in-memory firmware session
 4. One selected account per WalletConnect session; enumerate supported Trezor account paths eagerly
 5. Static token registry
 6. No EVM support in V1

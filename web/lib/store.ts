@@ -85,7 +85,6 @@ interface AppState {
   trezorConnected: boolean;
   trezorDeviceInfo: DeviceInfo | null;
   trezorUiRequest: { type: string; payload?: any } | null;
-  passphraseOnDeviceOnly: boolean;
   wcProjectId: string | null;
   solanaAddress: string | null;
   solanaDerivationPath: string;
@@ -120,7 +119,6 @@ interface AppState {
   setTrezorConnected: (connected: boolean) => void;
   setTrezorDeviceInfo: (info: DeviceInfo | null) => void;
   setTrezorUiRequest: (request: { type: string; payload?: any } | null) => void;
-  setPassphraseOnDeviceOnly: (enabled: boolean) => void;
   setWcProjectId: (projectId: string | null) => void;
   setSolanaAddress: (address: string, path: string) => void;
   setSolanaBalance: (balance: number | null) => void;
@@ -166,7 +164,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
   trezorConnected: false,
   trezorDeviceInfo: null,
   trezorUiRequest: null,
-  passphraseOnDeviceOnly: false,
   wcProjectId: process.env.NEXT_PUBLIC_WC_PROJECT_ID || null,
   solanaAddress: null,
   solanaDerivationPath: "m/44'/501'/0'/0'",
@@ -191,8 +188,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setTrezorConnected: (connected) => set({ trezorConnected: connected }),
   setTrezorDeviceInfo: (info) => set({ trezorDeviceInfo: info }),
   setTrezorUiRequest: (request) => set({ trezorUiRequest: request }),
-  setPassphraseOnDeviceOnly: (enabled) =>
-    set({ passphraseOnDeviceOnly: enabled }),
   setWcProjectId: (projectId) => set({ wcProjectId: projectId }),
   setSolanaAddress: (address, path) =>
     set({ solanaAddress: address, solanaDerivationPath: path }),

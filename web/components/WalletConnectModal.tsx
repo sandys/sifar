@@ -10,8 +10,11 @@ import { decodeQrFromBlob, imageFromClipboard } from '@/lib/qrDecode';
 import { shortenAddress } from '@/lib/format';
 import {
   getSafeWalletConnectUriLog,
-  parseWalletConnectUri
+  parseWalletConnectUri,
+  type WalletConnectUriInfo
 } from '@/lib/walletConnectUri';
+import { ActionDisclosureSheet } from '@/components/ActionDisclosure';
+import { walletConnectPairingDisclosure } from '@/lib/actionDisclosure';
 
 /**
  * Link step: connect this account to a dApp.
@@ -39,8 +42,12 @@ export function WalletConnectModal() {
   const [projectIdInput, setProjectIdInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingPairing, setPendingPairing] = useState<{
+    uri: string;
+    info: WalletConnectUriInfo;
+  } | null>(null);
 
-  const pair = async (uri: string) => {
+  const preparePairing = (uri: string) => {
     const trimmed = uri.trim();
     if (!trimmed) return false;
 
@@ -55,15 +62,26 @@ export function WalletConnectModal() {
     if (!parsed) return false;
 
     setError(null);
+    // Do not retain or repeat a pairing secret once validation succeeds. The
+    // pending value stays only in this component until confirm/cancel.
+    setWcUri('');
+    setPendingPairing({ uri: trimmed, info: parsed });
+    return true;
+  };
+
+  const pair = async (uri: string, parsed: WalletConnectUriInfo) => {
+    setPendingPairing(null);
+
+    setError(null);
     setBusy(true);
     setStatus('Pairing with dApp…');
     addWcEvent({
       type: 'pairing_started',
-      details: `Pairing ${getSafeWalletConnectUriLog(parsed)}`
+      details: `Pairing ${JSON.stringify(getSafeWalletConnectUriLog(parsed))}`
     });
 
     try {
-      await pairWithDApp(trimmed);
+      await pairWithDApp(uri);
       setWcUri('');
       setStatus('Paired. Waiting for the dApp to send a proposal…');
       return true;
@@ -83,9 +101,9 @@ export function WalletConnectModal() {
   // Returning false keeps the camera running on a non-WalletConnect code.
   const onScanned = (value: string) => {
     if (!value.startsWith('wc:')) return false;
-    setScannerOpen(false);
-    void pair(value);
-    return true;
+    const valid = preparePairing(value);
+    if (valid) setScannerOpen(false);
+    return valid;
   };
 
   const onPasteImage = async (event: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -97,7 +115,7 @@ export function WalletConnectModal() {
     try {
       const value = await decodeQrFromBlob(file);
       if (!value) throw new Error('No QR code found in that image.');
-      await pair(value);
+      preparePairing(value);
     } catch (err: any) {
       setError(err?.message || 'Could not read that image.');
       setStatus(null);
@@ -194,7 +212,7 @@ export function WalletConnectModal() {
               fullWidth
               className="mt-2"
               disabled={busy || !wcUri.trim()}
-              onClick={() => pair(wcUri)}
+              onClick={() => preparePairing(wcUri)}
             >
               Connect WalletConnect
             </Button>
@@ -233,6 +251,21 @@ export function WalletConnectModal() {
       >
         <QrScanner onDecode={onScanned} />
       </Sheet>
+
+      {pendingPairing && (
+        <ActionDisclosureSheet
+          open
+          disclosure={walletConnectPairingDisclosure(pendingPairing.info)}
+          onConfirm={() => {
+            const pairing = pendingPairing;
+            void pair(pairing.uri, pairing.info);
+          }}
+          onCancel={() => {
+            setPendingPairing(null);
+            setStatus(null);
+          }}
+        />
+      )}
     </section>
   );
 }

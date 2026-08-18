@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/Button';
 import { accountLabelFromPath, shortenAddress } from '@/lib/format';
 import { confirmSolanaAddressOnDevice } from '@/lib/trezor';
 import { runDeviceOperation, useDeviceStore } from '@/lib/deviceSession';
+import { ActionDisclosureSheet } from '@/components/ActionDisclosure';
+import { addressVerificationDisclosure } from '@/lib/actionDisclosure';
 
 /** Shown before "show all" for large enumerations. */
 const INITIAL_VISIBLE = 10;
@@ -37,6 +39,11 @@ export function WalletDisplay({
   );
   const deviceBusy = useDeviceStore((s) => s.activeOp !== null);
   const [confirmingIndex, setConfirmingIndex] = useState<number | null>(null);
+  const [pendingVerification, setPendingVerification] = useState<{
+    index: number;
+    address: string;
+    path: string;
+  } | null>(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [filterConnected, setFilterConnected] = useState(false);
@@ -98,9 +105,9 @@ export function WalletDisplay({
     setConfirmingIndex(index);
     setStatus('Confirm the address on your Trezor…');
     try {
-      // Exclusive: preempts a running enumeration. The scan's lockAfter runs
-      // first, so this confirm hits a locked device → PIN → address confirm.
-      // The arbiter locks again after this op — no manual lock here.
+      // Exclusive: preempts a running enumeration, then uses the same
+      // firmware-managed authentication session. The Trezor decides whether
+      // PIN/passphrase input is needed before it displays the address.
       await runDeviceOperation(
         { label: 'confirm-address', exclusive: true },
         () => confirmSolanaAddressOnDevice(index, address)
@@ -201,7 +208,17 @@ export function WalletDisplay({
                   a mis-tap generator on touch. */}
               <button
                 type="button"
-                onClick={() => chooseAccount(index, account.address)}
+                onClick={() => {
+                  if (confirmedAddresses.includes(account.address)) {
+                    void chooseAccount(index, account.address);
+                    return;
+                  }
+                  setPendingVerification({
+                    index,
+                    address: account.address,
+                    path: account.path
+                  });
+                }}
                 disabled={confirmingIndex !== null}
                 className={`flex min-h-[68px] w-full items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-left transition disabled:opacity-60 ${
                   isActive
@@ -276,6 +293,19 @@ export function WalletDisplay({
         >
           Re-scan accounts from device
         </Button>
+      )}
+
+      {pendingVerification && (
+        <ActionDisclosureSheet
+          open
+          disclosure={addressVerificationDisclosure(pendingVerification)}
+          onConfirm={() => {
+            const target = pendingVerification;
+            setPendingVerification(null);
+            void chooseAccount(target.index, target.address);
+          }}
+          onCancel={() => setPendingVerification(null)}
+        />
       )}
     </section>
   );

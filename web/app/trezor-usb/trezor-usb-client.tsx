@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, useRef } from 'react';
+import { useMemo, useState, useRef } from 'react';
 import { Button } from '@/components/ui/Button';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
 import {
@@ -25,6 +25,8 @@ import { HomeStep } from '@/components/HomeStep';
 import { UnsupportedScreen } from '@/components/UnsupportedScreen';
 import { useCapabilities } from '@/lib/hooks/useCapabilities';
 import { useDebugTelemetry } from '@/lib/hooks/useDebugTelemetry';
+import { ActionDisclosureSheet } from '@/components/ActionDisclosure';
+import { accountDiscoveryDisclosure } from '@/lib/actionDisclosure';
 
 const CONNECTION_TIMEOUT_MS = 60000; // 60 seconds timeout
 
@@ -36,9 +38,6 @@ export function TrezorUsbClient() {
   const accountChosen = useAppStore((state) => state.accountChosen);
   const wizardIntent = useAppStore((state) => state.wizardIntent);
   const activeSessions = useAppStore((state) => state.activeSessions);
-  const setPassphraseOnDeviceOnly = useAppStore(
-    (state) => state.setPassphraseOnDeviceOnly
-  );
   const setTrezorConnected = useAppStore((state) => state.setTrezorConnected);
   const setTrezorDeviceInfo = useAppStore((state) => state.setTrezorDeviceInfo);
   const setSolanaAccounts = useAppStore((state) => state.setSolanaAccounts);
@@ -58,7 +57,9 @@ export function TrezorUsbClient() {
   // enumeration progress and disconnect are owned by the deviceSession arbiter.
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [onDeviceOnly, setOnDeviceOnly] = useState(false);
+  const [discoveryDisclosure, setDiscoveryDisclosure] = useState<
+    'connect' | 'rescan' | null
+  >(null);
   const [progress, setProgress] = useState({ scanned: 0, found: 0 });
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -75,11 +76,6 @@ export function TrezorUsbClient() {
   useDebugTelemetry();
 
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-  useEffect(() => {
-    setPassphraseOnDeviceOnly(onDeviceOnly);
-    return () => setPassphraseOnDeviceOnly(false);
-  }, [onDeviceOnly, setPassphraseOnDeviceOnly]);
 
   const step = useMemo(
     () =>
@@ -168,14 +164,13 @@ export function TrezorUsbClient() {
   /**
    * Read the account list from the device.
    *
-   * Separate from handleConnect so it can be re-run later. Re-reading the list
-   * is a device operation, and because every operation ends with the device
-   * locked, a re-scan always costs a fresh PIN entry — which is the point.
+   * Separate from handleConnect so it can be re-run later. Firmware owns the
+   * authentication lifetime, so a re-scan reuses the in-memory device session
+   * unless the Trezor itself asks for PIN/passphrase again.
    */
   const enumerateAccounts = () =>
     // Preemptible: choosing an account (an exclusive op) aborts this scan.
-    // coalesce joins a duplicate submit from a render-lag double-tap. The
-    // arbiter locks the device once when this settles — no manual lock here.
+    // coalesce joins a duplicate submit from a render-lag double-tap.
     runDeviceOperation(
       { label: 'enumerate', exclusive: false, coalesce: true },
       async ({ signal }) => {
@@ -203,7 +198,9 @@ export function TrezorUsbClient() {
           // gate-close abort to Trezor_Disconnected for the caller.
           if (signal.aborted) break;
           try {
-            const account = await getSolanaAddress(i, i === 0);
+            // Discovery is intentionally silent. The one address the user
+            // selects is displayed and confirmed on-device in WalletDisplay.
+            const account = await getSolanaAddress(i, false);
             if (signal.aborted) break;
             const accountEntry = {
               address: account.address,
@@ -304,12 +301,24 @@ export function TrezorUsbClient() {
     if (getDeviceSessionState().activeOp) return;
     setError(null);
     clearConfirmedAddresses();
-    setStatus('Unlock your Trezor to re-scan accounts…');
+    setStatus('Re-scanning public accounts…');
     try {
       await enumerateAccounts();
       setStatus('Accounts re-scanned. Confirm one to use it.');
     } catch (err: any) {
       handleConnectError(err);
+    }
+  };
+
+  const confirmDiscovery = () => {
+    const action = discoveryDisclosure;
+    setDiscoveryDisclosure(null);
+    if (action === 'connect') {
+      // This click remains Chrome's user gesture. handleConnect performs no
+      // await before requestWebUSBDevice(), so the chooser stays permitted.
+      void handleConnect();
+    } else if (action === 'rescan') {
+      void handleRescan();
     }
   };
 
@@ -343,20 +352,10 @@ export function TrezorUsbClient() {
             device signs everything.
           </p>
 
-          <label className="flex min-h-[48px] items-center gap-3 text-base text-steel">
-            <input
-              type="checkbox"
-              checked={onDeviceOnly}
-              onChange={(event) => setOnDeviceOnly(event.target.checked)}
-              className="h-6 w-6 rounded border-amber-300"
-            />
-            Enter passphrase on device only
-          </label>
-
           <Button
             size="lg"
             fullWidth
-            onClick={handleConnect}
+            onClick={() => setDiscoveryDisclosure('connect')}
             disabled={loading || !capabilities.hydrated}
           >
             {loading ? 'Connecting…' : 'Connect Trezor'}
@@ -385,12 +384,22 @@ export function TrezorUsbClient() {
               <p className="text-sm text-ink">{error}</p>
               {/* A button, never an auto-retry: requestDevice() must run inside
                   a real user gesture. */}
-              <Button variant="ghost" onClick={handleConnect}>
+              <Button
+                variant="ghost"
+                onClick={() => setDiscoveryDisclosure('connect')}
+              >
                 Try again
               </Button>
             </div>
           )}
         </section>
+
+        <ActionDisclosureSheet
+          open={discoveryDisclosure === 'connect'}
+          disclosure={accountDiscoveryDisclosure(false)}
+          onConfirm={confirmDiscovery}
+          onCancel={() => setDiscoveryDisclosure(null)}
+        />
       </div>
     );
   }
@@ -399,7 +408,9 @@ export function TrezorUsbClient() {
     <div className="grid gap-6">
       {brand}
 
-      {step === 'accounts' && <WalletDisplay onRescan={handleRescan} />}
+      {step === 'accounts' && (
+        <WalletDisplay onRescan={() => setDiscoveryDisclosure('rescan')} />
+      )}
       {step === 'link' && <WalletConnectModal />}
       {step === 'home' && (
         <HomeStep
@@ -411,6 +422,13 @@ export function TrezorUsbClient() {
           onDisconnect={handleDisconnect}
         />
       )}
+
+      <ActionDisclosureSheet
+        open={discoveryDisclosure === 'rescan'}
+        disclosure={accountDiscoveryDisclosure(true)}
+        onConfirm={confirmDiscovery}
+        onCancel={() => setDiscoveryDisclosure(null)}
+      />
     </div>
   );
 }

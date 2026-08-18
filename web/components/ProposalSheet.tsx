@@ -7,8 +7,11 @@ import { Sheet } from '@/components/ui/Sheet';
 import { shortenAddress } from '@/lib/format';
 import {
   approveSessionProposal,
+  getSolanaProposalRequest,
   rejectSessionProposal
 } from '@/lib/walletconnect';
+import { ActionDisclosurePanel } from '@/components/ActionDisclosure';
+import { sessionProposalDisclosure } from '@/lib/actionDisclosure';
 
 /**
  * Session proposal approval.
@@ -56,6 +59,16 @@ export function ProposalSheet() {
   if (!pendingProposal || !solanaAddress) return null;
 
   const proposer = pendingProposal.proposer;
+  const requested = getSolanaProposalRequest(
+    pendingProposal.requiredNamespaces,
+    pendingProposal.optionalNamespaces
+  );
+  const disclosure = sessionProposalDisclosure({
+    dappName: proposer.name,
+    address: solanaAddress,
+    chains: requested.chains,
+    methods: requested.methods
+  });
 
   const approve = async () => {
     setBusy(true);
@@ -132,7 +145,7 @@ export function ProposalSheet() {
       footer={
         <div className="grid gap-2">
           <Button size="lg" fullWidth onClick={approve} disabled={busy}>
-            {busy ? 'Connecting…' : 'Approve'}
+            {busy ? 'Connecting…' : disclosure.primaryLabel}
           </Button>
           <Button variant="ghost" fullWidth onClick={reject} disabled={busy}>
             Reject
@@ -160,9 +173,8 @@ export function ProposalSheet() {
           </div>
         </div>
 
-        <p className="text-sm text-steel">
-          This dApp wants to connect to your account. Check the domain above
-          matches the site you opened.
+        <p className="text-sm font-semibold text-ink">
+          Check that the domain above matches the site you opened.
         </p>
 
         <div className="rounded-2xl border border-amber-200 bg-white/70 p-4">
@@ -184,10 +196,7 @@ export function ProposalSheet() {
           </p>
         )}
 
-        <p className="text-sm text-steel">
-          Approving only shares your address. Nothing can be signed without a
-          separate confirmation on your Trezor.
-        </p>
+        <ActionDisclosurePanel disclosure={disclosure} />
 
         {error && <p className="text-sm text-ember">{error}</p>}
       </div>

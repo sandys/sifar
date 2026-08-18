@@ -7,6 +7,12 @@ import {
   getFirmwareVersion,
   supportsStableSolanaOcmsV1
 } from './trezorMessages';
+import {
+  getResumableDeviceSessionId,
+  isLegacyOnDevicePassphraseRequest,
+  normalizeDeviceSessionId,
+  supportsOnDevicePassphrase
+} from './trezorSession';
 
 type ConnectResult<T> =
   | { success: true; payload: T }
@@ -94,6 +100,10 @@ class TrezorConnectLike {
   private session: Session | null = null;
   private descriptor: Descriptor | null = null;
   private features: any | null = null;
+  // Firmware session ID, distinct from @trezor/transport's acquisition
+  // handle. Keeping it in this class lets the device reuse its cached seed
+  // without persisting the passphrase or session outside this tab.
+  private deviceSessionId: string | null = null;
   private queue: Promise<void> = Promise.resolve();
   /**
    * Bumped by dispose(). Work captured under an older generation is abandoned
@@ -204,6 +214,7 @@ class TrezorConnectLike {
     this.session = null;
     this.descriptor = null;
     this.features = null;
+    this.deviceSessionId = null;
     this.initialized = false;
     this.pendingUi?.reject(new Error('Disposed'));
     this.pendingUi = null;
@@ -357,27 +368,13 @@ class TrezorConnectLike {
   }
 
   /**
-   * Lock the device, so the next operation touching the seed requires the PIN
-   * again.
+   * Forget only the transport acquisition handle.
    *
-   * PIN normally unlocks the device, not the operation — once unlocked it
-   * stays unlocked until the device's own auto-lock timer fires, so a host
-   * that has already been through one PIN entry could sign repeatedly without
-   * further authentication. Locking after every logical operation collapses
-   * that window to a single operation.
-   *
-   * `EndSession` additionally drops the cached passphrase session, so a hidden
-   * wallet requires its passphrase again rather than only the PIN.
+   * This is separate from `deviceSessionId`: an invalid WebUSB acquisition can
+   * be replaced while the firmware session (and its cached derived seed) is
+   * safely resumed. Explicit lock/disconnect clears both.
    */
-  /**
-   * Forget our session handle so the next call acquires a fresh one.
-   *
-   * EndSession terminates the session device-side. Reusing the handle after
-   * that produces `Failure: Invalid session` on the next command — the device
-   * had already started a PIN prompt, so the lock itself was working; only the
-   * stale handle was wrong.
-   */
-  private dropSession() {
+  private dropTransportSession() {
     if (this.transport && this.session) {
       try {
         (this.transport as any).releaseSync(this.session);
@@ -389,6 +386,21 @@ class TrezorConnectLike {
     this.features = null;
   }
 
+  private captureFeatures(features: any) {
+    this.features = features;
+    this.captureDeviceSessionId(features?.session_id);
+  }
+
+  private captureDeviceSessionId(value: unknown) {
+    const nextSessionId = normalizeDeviceSessionId(value);
+    // Older firmware omits session_id. Do not erase a known ID merely because
+    // an unrelated Features response did not include the optional field.
+    if (nextSessionId) {
+      this.deviceSessionId = nextSessionId;
+    }
+  }
+
+  /** Explicit Disconnect teardown: end cached seed state, then lock device. */
   async lockDevice(endSession = true): Promise<ConnectResult<null>> {
     return this.enqueue(async () => {
       try {
@@ -402,7 +414,8 @@ class TrezorConnectLike {
           }
           // Must happen before the next call: EndSession invalidated the
           // handle, and callWithUi would otherwise reuse it.
-          this.dropSession();
+          this.dropTransportSession();
+          this.deviceSessionId = null;
         }
 
         const response = await this.callWithUi('LockDevice', {});
@@ -415,10 +428,10 @@ class TrezorConnectLike {
       } catch (err: any) {
         return { success: false, payload: { error: err.message || 'Failed' } };
       } finally {
-        // Whatever happened above, the next operation starts from a clean
-        // session and re-authenticates. ensureSession() re-acquires and
-        // re-Initializes on demand.
-        this.dropSession();
+        // Explicit teardown is the one place that intentionally discards the
+        // firmware auth session as well as the transport handle.
+        this.dropTransportSession();
+        this.deviceSessionId = null;
       }
     });
   }
@@ -430,7 +443,7 @@ class TrezorConnectLike {
         if (response.type !== 'Features') {
           throw new Error(`Unexpected response: ${response.type}`);
         }
-        this.features = response.message;
+        this.captureFeatures(response.message);
         return { success: true, payload: response.message };
       } catch (err: any) {
         return { success: false, payload: { error: err.message || 'Failed' } };
@@ -493,14 +506,19 @@ class TrezorConnectLike {
         this.session = null;
         this.descriptor = null;
         this.features = null;
+        this.deviceSessionId = null;
         this.emitUi({ type: 'ui-no_transport' });
       }
     });
 
     try {
-      const initResponse = await this.callWithUi('Initialize', {});
+      const resumableSession = getResumableDeviceSessionId(this.deviceSessionId);
+      const initResponse = await this.callWithUi(
+        'Initialize',
+        resumableSession ? { session_id: resumableSession } : {}
+      );
       if (initResponse.type === 'Features') {
-        this.features = initResponse.message;
+        this.captureFeatures(initResponse.message);
       }
     } catch {
       // Ignore initialize failures; subsequent calls will surface issues.
@@ -553,7 +571,7 @@ class TrezorConnectLike {
         // exemption every session acquire sent Initialize twice and then raised
         // a spurious 'Unexpected response: Features' error.
         if (type === 'Features' && name !== 'GetFeatures' && name !== 'Initialize') {
-          this.features = message;
+          this.captureFeatures(message);
           if (retriedAfterFeatures) {
             throw new Error('Unexpected response: Features');
           }
@@ -576,7 +594,7 @@ class TrezorConnectLike {
           if (/invalid session/i.test(errorMessage) && !retriedAfterSession) {
             retriedAfterSession = true;
             this.log('Invalid session — re-acquiring and retrying', name);
-            this.dropSession();
+            this.dropTransportSession();
             await this.ensureSession();
             // The last remaining post-dispose re-acquire path: if a disconnect
             // landed during ensureSession, abandon rather than wake the device.
@@ -630,36 +648,52 @@ class TrezorConnectLike {
         }
 
         if (type === 'PassphraseRequest') {
-          const onDeviceFlag =
-            typeof message?.on_device !== 'undefined'
-              ? message?.on_device
-              : message?._on_device;
-          this.log('PassphraseRequest', onDeviceFlag);
+          if (isLegacyOnDevicePassphraseRequest(message)) {
+            this.log('PassphraseRequest', 'legacy-on-device');
+            response = await transport.call({
+              session: this.session,
+              name: 'PassphraseAck',
+              data: {}
+            });
+            continue;
+          }
+
+          const onDeviceAllowed = supportsOnDevicePassphrase(this.features);
+          this.log('PassphraseRequest', {
+            onDeviceAllowed
+          });
           const passPayload = (await this.waitForUi({
             type: 'ui-receive_passphrase',
             request: {
               type: 'ui-request_passphrase',
-              payload: { onDeviceAllowed: !!onDeviceFlag }
+              payload: { onDeviceAllowed }
             }
           })) as { passphrase?: string; onDevice?: boolean };
           if (passPayload.onDevice) {
             this.log('PassphraseAck', 'on-device');
           } else {
-            this.log(
-              'PassphraseAck',
-              `length=${passPayload.passphrase ? passPayload.passphrase.length : 0}`
-            );
+            this.log('PassphraseAck', 'host-entry');
           }
-          const ackData: Record<string, unknown> = {
-            passphrase: passPayload.passphrase || ''
-          };
-          if (passPayload.onDevice) {
-            ackData.on_device = true;
-          }
+          const ackData: Record<string, unknown> = passPayload.onDevice
+            ? { on_device: true }
+            : { passphrase: passPayload.passphrase ?? '' };
           response = await transport.call({
             session: this.session,
             name: 'PassphraseAck',
             data: ackData
+          });
+          continue;
+        }
+
+        if (type === 'Deprecated_PassphraseStateRequest') {
+          // Legacy firmware returns the resumable session bytes in a separate
+          // handshake. Field 1 is wire-compatible with Initialize.session_id.
+          this.captureDeviceSessionId(message?.state);
+          this.log('Passphrase session established', 'legacy-state');
+          response = await transport.call({
+            session: this.session,
+            name: 'Deprecated_PassphraseStateAck',
+            data: {}
           });
           continue;
         }

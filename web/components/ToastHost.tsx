@@ -1,8 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAppStore } from '@/lib/store';
-import { useDeviceStore } from '@/lib/deviceSession';
 
 const TONE_STYLES = {
   info: 'border-amber-200 bg-white text-ink',
@@ -25,21 +24,6 @@ export function ToastHost() {
   const statusNonce = useAppStore((state) => state.statusNonce);
   const setStatus = useAppStore((state) => state.setStatus);
   const [visible, setVisible] = useState(false);
-
-  // The single subscriber for lock failures. The arbiter locks the device
-  // after every op; if a lock fails it bumps this nonce, and the user is told
-  // once — covering signing, address confirmation and enumeration alike.
-  const lockFailedNonce = useDeviceStore((s) => s.lockFailedNonce);
-  const lastLockNonce = useRef(lockFailedNonce);
-  useEffect(() => {
-    if (lockFailedNonce !== lastLockNonce.current) {
-      lastLockNonce.current = lockFailedNonce;
-      setStatus(
-        'The device did not lock. Lock it manually before leaving it.',
-        'warn'
-      );
-    }
-  }, [lockFailedNonce, setStatus]);
 
   // Keyed on the nonce, not the text, so the same message firing twice
   // re-shows rather than looking stuck.
