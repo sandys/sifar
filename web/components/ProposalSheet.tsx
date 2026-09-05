@@ -73,33 +73,67 @@ export function ProposalSheet() {
   const approve = async () => {
     setBusy(true);
     setError(null);
+    // Tracks whether the session exists on the wire. Everything after
+    // approveSession is local bookkeeping, and a failure there must not be
+    // answered by rejecting a proposal the dApp has already been told was
+    // accepted — that left a live session absent from the store, so the user
+    // could neither see it nor disconnect it.
+    let session: Awaited<ReturnType<typeof approveSessionProposal>> | null =
+      null;
     try {
-      const session = await approveSessionProposal(
+      session = await approveSessionProposal(
         pendingProposal.id,
         solanaAddress,
         pendingProposal.params
       );
       addActiveSession({
         topic: session.topic,
-        peerName: session.peer.metadata.name,
-        peerUrl: session.peer.metadata.url,
-        peerIcon: session.peer.metadata.icons?.[0],
+        peerName: session.peer?.metadata?.name || 'Unknown',
+        peerUrl: session.peer?.metadata?.url || '',
+        peerIcon: session.peer?.metadata?.icons?.[0],
         chains: Object.keys(session.namespaces || {}),
         walletAddress: solanaAddress
       });
       addWcEvent({
         type: 'session_approved',
-        peerName: session.peer.metadata.name,
+        peerName: session.peer?.metadata?.name || 'Unknown',
         topic: session.topic,
-        details: `Approved session with ${session.peer.metadata.name}`
+        details: `Approved session with ${
+          session.peer?.metadata?.name || 'the dApp'
+        }`
       });
       setPendingProposal(null);
-      setStatus(`Connected to ${session.peer.metadata.name}.`);
+      setStatus(`Connected to ${session.peer?.metadata?.name || 'the dApp'}.`);
     } catch (err: any) {
       setError(err?.message || 'Could not approve this connection.');
-      // Approval can fail for reasons retrying will not fix (expired proposal,
-      // namespaces we cannot satisfy). Answer the dApp rather than leaving it
-      // waiting on a proposal that will never be accepted.
+
+      if (session) {
+        // Approved on the wire; only our own bookkeeping failed. Record the
+        // session so it stays visible and disconnectable.
+        addActiveSession({
+          topic: session.topic,
+          peerName: session.peer?.metadata?.name || 'Unknown',
+          peerUrl: session.peer?.metadata?.url || '',
+          peerIcon: session.peer?.metadata?.icons?.[0],
+          chains: Object.keys(session.namespaces || {}),
+          walletAddress: solanaAddress
+        });
+        addWcEvent({
+          type: 'error',
+          topic: session.topic,
+          details: `Session approved but could not be recorded cleanly: ${
+            err?.message || 'Unknown error'
+          }`
+        });
+        setPendingProposal(null);
+        setBusy(false);
+        return;
+      }
+
+      // Approval never landed. It can fail for reasons retrying will not fix
+      // (expired proposal, namespaces we cannot satisfy). Answer the dApp
+      // rather than leaving it waiting on a proposal that will never be
+      // accepted.
       try {
         await rejectSessionProposal(pendingProposal.id);
       } catch {

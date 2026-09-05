@@ -1050,6 +1050,80 @@ function checkFilterUIClarity(file, content) {
   }
 }
 
+// Mistake: a second session_request overwrote pendingRequest, so the first
+// vanished from the UI while its dApp stayed blocked on an id nothing would
+// ever answer. Staging must refuse a newcomer while one is awaiting approval.
+function checkSingleInFlightRequest(file, content) {
+  if (file !== 'lib/signing.ts') return;
+  if (!content.includes('setPendingRequest')) return;
+  const guardsInFlight =
+    content.includes('WC_ERROR_REQUEST_PENDING') &&
+    /inFlight|alreadyPending/.test(content);
+  if (!guardsInFlight) {
+    addError(
+      file,
+      'handleSessionRequest must reject a new request while one is already ' +
+        'staged (WC_ERROR_REQUEST_PENDING), or the staged request is orphaned ' +
+        'and its dApp hangs until expiry.'
+    );
+  }
+}
+
+// Mistake: a failed broadcast was answered with 4001 "User rejected". The user
+// approved, the device signed, and the transaction may still confirm — so a
+// rejection code is factually wrong and misleads the dApp's retry logic.
+function checkBroadcastFailureNotUserRejection(file, content) {
+  if (file !== 'lib/signing.ts') return;
+  if (!content.includes('sendRawTransaction')) return;
+  if (!content.includes('WC_ERROR_TRANSACTION_FAILED')) {
+    addError(
+      file,
+      'A broadcast failure after signing must be reported with its own error ' +
+        'code (WC_ERROR_TRANSACTION_FAILED), never as user rejection 4001.'
+    );
+  }
+  if (!content.includes('RequestAnsweredError')) {
+    addError(
+      file,
+      'Mark an already-answered request (RequestAnsweredError) so the UI ' +
+        'catch-all does not overwrite the accurate response with 4001.'
+    );
+  }
+}
+
+// Mistake: ensureSession re-registered a deviceEvents listener on every
+// re-acquire (auto-lock, stolen device, cancel) while the transport outlived
+// all of them, so listeners accumulated for the lifetime of the tab.
+function checkDeviceEventListenerDetach(file, content) {
+  if (file !== 'lib/trezorConnect.ts') return;
+  if (!content.includes('deviceEvents.on')) return;
+  if (!content.includes('deviceEvents.off')) {
+    addError(
+      file,
+      'Every deviceEvents.on must have a matching deviceEvents.off. ' +
+        'ensureSession runs again after each transport-session drop, so an ' +
+        'unpaired listener leaks one subscription per re-acquire.'
+    );
+  }
+}
+
+// Mistake: the client RPC helper logged the full resolved URL. Provider URLs
+// carry the API key in the query string, and console output is captured into
+// the in-app debug log that users are told to copy when reporting problems.
+function checkRpcUrlNotLogged(file, content) {
+  if (file !== 'lib/solana.ts') return;
+  // Strip safeLabel(...) wrappers first: passing the URL through it is exactly
+  // the required form, and a naive scan would flag the fix as the bug.
+  const unwrapped = content.replace(/safeLabel\([^)]*\)/g, 'SAFE_LABEL');
+  if (/console\.(warn|log|error|info)\([^;]*\bresolvedUrl\b/.test(unwrapped)) {
+    addError(
+      file,
+      'Never log a resolved RPC URL: it can carry an API key. Log the host ' +
+        'only, via safeLabel().'
+    );
+  }
+}
+
 // Run introspection lints on all files
 function runIntrospectionLints(file, content) {
   checkBrandingConsistency(file, content);
@@ -1062,6 +1136,10 @@ function runIntrospectionLints(file, content) {
   checkSigningAccountMismatch(file, content);
   checkNoRedundantDisplays(file, content);
   checkFilterUIClarity(file, content);
+  checkSingleInFlightRequest(file, content);
+  checkBroadcastFailureNotUserRejection(file, content);
+  checkDeviceEventListenerDetach(file, content);
+  checkRpcUrlNotLogged(file, content);
 }
 
 // ============================================

@@ -68,6 +68,22 @@ function shouldRetryRpc(error: unknown) {
   );
 }
 
+/**
+ * Host only — never the full URL.
+ *
+ * Provider URLs carry the API key in the query string, and every console line
+ * is captured into the in-app debug log that users are invited to copy and
+ * paste when reporting a problem. Logging the URL would put the credential in
+ * that paste.
+ */
+function safeLabel(url: string) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return 'invalid-rpc-url';
+  }
+}
+
 async function withRpc<T>(
   fn: (connection: Connection, url: string) => Promise<T>
 ): Promise<T> {
@@ -84,7 +100,11 @@ async function withRpc<T>(
     } catch (error) {
       lastError = error;
       // eslint-disable-next-line no-console
-      console.warn('[SolanaRPC] failed', resolvedUrl, getErrorMessage(error));
+      console.warn(
+        '[SolanaRPC] failed',
+        safeLabel(resolvedUrl),
+        getErrorMessage(error)
+      );
       if (!shouldRetryRpc(error)) {
         throw error;
       }

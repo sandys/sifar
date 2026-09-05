@@ -98,7 +98,9 @@ this procedure for the local Docker Compose development server.
 - If the page works but WebUSB is unavailable, verify Chromium and HTTPS. The
   Railway server cannot access USB; the user's browser owns the device.
 - If any response or log includes a full RPC URL, stop and remove it: provider
-  URLs can contain API keys and only hostnames are safe to report.
+  URLs can contain API keys and only hostnames are safe to report. The gate in
+  step 2 enforces this for `lib/solana.ts`, but the proxy route and any new
+  caller still need review.
 
 ## Done when
 

@@ -145,14 +145,17 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
      lib/solanaMessageSigning.test.ts \
      lib/walletConnectSolanaMessage.test.ts \
      lib/walletconnect.test.ts \
-     lib/walletConnectUri.test.ts
+     lib/walletConnectUri.test.ts \
+     lib/signing.test.ts \
+     lib/signingRequestLifecycle.test.ts
    ```
 
    - `web/lib/trezorMessages.ts`: firmware protobuf IDs and fields.
    - `web/lib/trezorConnect.ts`: direct calls and UI response loop.
    - `web/lib/solanaOffchainMessage.ts`: canonical OCMS v1 bytes.
    - `web/lib/solanaMessageSigning.ts`: exact `signed_data` and Ed25519 checks.
-   - `web/lib/signing.ts`: WalletConnect/session/account binding.
+   - `web/lib/signing.ts`: WalletConnect/session/account binding, and the
+     one-request-at-a-time staging guard with its error codes.
 
 ## Failure modes
 - `requestDevice: No device selected` means the chooser was cancelled or no
@@ -194,6 +197,26 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
   detection regressed. Gate it on `Capability_PassphraseEntry`; a legacy
   `PassphraseRequest._on_device=true` is an immediate empty ack, not a browser
   choice. Browser entry and **Use No Passphrase** remain explicit alternatives.
+- A dApp that hangs forever after sending a second request means the staged
+  request was overwritten instead of the newcomer being refused. `pendingRequest`
+  holds one request; `handleSessionRequest` must answer the second with
+  `-32002`. Reproduce without hardware via `lib/signingRequestLifecycle.test.ts`.
+- A dApp reporting "user rejected" for a transaction the user approved on the
+  device is a broadcast failure mislabelled. Signing succeeded and the
+  transaction may still confirm, so it must return `-32003`; check that the
+  signing path threw `RequestAnsweredError` so the UI catch-all did not overwrite
+  the response with `4001`.
+- An "Invalid PIN" prompt that flashes and disappears means the generic
+  `ui-error` or the `finally` `ui-close_window` clobbered it. Failure code 7 sets
+  `specificUiEmitted`, which must suppress both; during enumeration the close is
+  what used to dismiss it entirely.
+- A camera that shows a black frame with a live-looking reticle after the phone
+  was locked or the tab backgrounded means the scanner stopped without becoming
+  resumable. `QrScanner` must enter `paused` and restart on `visibilitychange`,
+  because `stop()` leaves the video element mounted.
+- A `ui-no_transport` teardown firing several times per unplug, or a growing
+  listener count across auto-locks, means a `deviceEvents.on` lost its `off`.
+  The single `deviceEventBinding` must be detached before each re-acquire.
 - `Forbidden key path` during address enumeration marks unsupported path range;
   it must stop background enumeration without replacing an active signing UI
   with an error prompt.
@@ -224,7 +247,11 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
 - `openssl: not found` inside the container is expected; `gen-cert.sh` is a host
   script. Do not add openssl to the dev image for this.
 - Solana RPC 403/429/502 failures do not invalidate hardware addresses. Keep RPC
-  behind `/api/solana`, space balance refreshes, and allow individual retries.
+  behind `/api/solana`, space balance refreshes, and allow individual retries. A
+  re-scan must supersede the previous refresh loop through the generation ref, or
+  two loops run together and halve the spacing that prevents the 429. Log the RPC
+  host only (`safeLabel`) on both sides — provider URLs carry API keys and the
+  console is captured into the debug log users paste.
 - A valid OCMS v1 signature can still be rejected by a dApp that verifies the
   raw WalletConnect message. Check `signedMessage` compatibility before blaming
   WebUSB or firmware.
@@ -237,5 +264,7 @@ Bridge, or a software signing fallback; those violate this repo's architecture.
   effect, and agreement before its CTA.
 - A real WalletConnect message request receives physical OCMS v1 confirmation,
   exact expected bytes, and a locally verified Ed25519 signature.
+- Every request the dApp sent has an answer: a result, or an error code matching
+  the real outcome. Nothing is left staged-but-unanswered after the flow ends.
 - Any remaining WalletConnect incompatibility is identified separately from
   transport, firmware, and signature correctness.

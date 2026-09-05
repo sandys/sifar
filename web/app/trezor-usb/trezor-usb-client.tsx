@@ -29,6 +29,8 @@ import { ActionDisclosureSheet } from '@/components/ActionDisclosure';
 import { accountDiscoveryDisclosure } from '@/lib/actionDisclosure';
 
 const CONNECTION_TIMEOUT_MS = 60000; // 60 seconds timeout
+/** Spacing between per-account balance reads, to stay under public-RPC limits. */
+const BALANCE_REFRESH_SPACING_MS = 5000;
 
 export function TrezorUsbClient() {
   const trezorConnected = useAppStore((state) => state.trezorConnected);
@@ -62,6 +64,8 @@ export function TrezorUsbClient() {
   >(null);
   const [progress, setProgress] = useState({ scanned: 0, found: 0 });
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Only the newest balance loop may write status; earlier ones bail out.
+  const balanceRefreshGeneration = useRef(0);
 
   // Derived, not local: the scan's liveness is whatever the arbiter says the
   // active op is. No abortRef/stopEnumerationRef — the arbiter's AbortSignal
@@ -240,20 +244,29 @@ export function TrezorUsbClient() {
         setSolanaAccounts([...accounts]);
         setStatusMessage('Refreshing balances…');
 
-        // Fire-and-forget: RPC only, no device. Stops when the gate closes.
+        // Fire-and-forget: RPC only, no device. Stops when the gate closes, or
+        // when a later scan supersedes this one — two loops running together
+        // halve the effective spacing below and draw 403/429 from public RPCs,
+        // which is the exact failure the spacing exists to avoid.
+        const generation = (balanceRefreshGeneration.current += 1);
+        const superseded = () =>
+          balanceRefreshGeneration.current !== generation ||
+          getDeviceSessionState().status === 'disconnected';
+
         const refreshBalances = async () => {
           for (let i = 0; i < accounts.length; i += 1) {
-            if (getDeviceSessionState().status === 'disconnected') return;
+            if (superseded()) return;
             await refreshSolanaAccountBalance(i);
             if (i < accounts.length - 1) {
-              await sleep(5000);
+              await sleep(BALANCE_REFRESH_SPACING_MS);
             }
           }
-          if (getDeviceSessionState().status === 'disconnected') return;
+          if (superseded()) return;
           setStatusMessage('Ready');
         };
 
         refreshBalances().catch((refreshError) => {
+          if (superseded()) return;
           // eslint-disable-next-line no-console
           console.warn('[Balances] refresh failed', refreshError);
           setStatusMessage('Balance refresh failed');

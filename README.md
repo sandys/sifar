@@ -139,6 +139,7 @@ web/
 - **WalletConnect v2**: Connect any WC-compatible dApp
 - **Stable OCMS v1**: Solana messages are confirmed and signed on current stable Core firmware
 - **Fail-closed verification**: Firmware `signed_data` and Ed25519 signatures are checked locally before a WalletConnect response
+- **Every request answered**: One request is staged at a time, a second is refused rather than displacing it, and each one ends in a response or an error code that says what actually happened
 - **Firmware-managed authentication**: PIN/passphrase prompts follow device state; normal operations reuse the in-memory firmware session and explicit Disconnect ends and locks it
 - **Informed actions**: Every connect, new-address verification, pairing, session approval, and signing action explains whether it signs, what happens, what is shared, and what continuing means
 - **URL State Restoration**: Bookmark URLs restore accounts + modal state
@@ -155,6 +156,22 @@ The supported baseline is stable Trezor Core firmware `2.12.4+`. The app patches
 The browser reconstructs the canonical OCMS v1 bytes, requires the WalletConnect signer to match an enumerated hardware account, asks Trezor to sign, compares the returned `signed_data` byte-for-byte, and verifies the Ed25519 signature locally. There is no software/session-key fallback.
 
 WalletConnect currently defines `solana_signMessage` as signing its raw base58-decoded message. OCMS v1 signs a domain-separated envelope instead. The response therefore includes the standard `signature` plus `signedMessage` and `messageVersion` extension fields. Legacy dApps that verify only the raw message may reject an otherwise valid hardware signature.
+
+### Error codes returned to dApps
+
+Every request is answered. A dApp branches on these codes, so each one reports
+what actually happened rather than a blanket rejection:
+
+| Code | Meaning |
+| --- | --- |
+| `4001` | The user declined, or the device refused to sign |
+| `-32002` | Another request is already awaiting approval; retry after answering it |
+| `-32003` | Signed successfully, but broadcasting failed — the transaction may still confirm |
+
+Only one request is staged at a time. A second arrival is rejected with
+`-32002` rather than replacing the staged one, because replacing it stranded
+the first request: it vanished from the UI while its dApp stayed blocked on an
+id nothing would ever answer.
 
 After connecting a device at `/trezor-usb`, click **Open WalletConnect** (or an
 account), paste a fresh WalletConnect QR/URI, approve the proposal, and trigger
@@ -366,6 +383,7 @@ The app is "provably dumb":
 - Transaction signer derived from TX, not UI state (prevents account mismatch)
 - Message signer must match both the WalletConnect session and an enumerated Trezor path
 - Firmware-returned message bytes and signatures are verified before responding
+- No dApp is left waiting or misinformed: every request ends in a response or an error code that matches the real outcome
 
 The intended V1 design has no persistence across reloads. The current URL-state
 restoration path still uses transient `sessionStorage`, and WalletConnect uses

@@ -304,6 +304,49 @@ export function TrezorPrompt() {
         Close
       </Button>
     );
+  } else if (type === 'ui-invalid_pin') {
+    const attemptsLeft = trezorUiRequest?.payload?.attemptsLeft;
+    body = (
+      <div className="grid gap-3">
+        <p className="text-sm text-ember">
+          The Trezor rejected that PIN.
+        </p>
+        {typeof attemptsLeft === 'number' && (
+          <p className="text-sm text-ink">
+            {attemptsLeft} attempt{attemptsLeft === 1 ? '' : 's'} left before
+            the device wipes itself.
+          </p>
+        )}
+        <p className="text-sm text-steel">
+          The keypad positions are scrambled on the device each time, so match
+          the layout on the Trezor screen rather than a remembered pattern.
+          Close this and retry the action to get a fresh PIN prompt.
+        </p>
+      </div>
+    );
+    footer = (
+      <Button variant="ghost" fullWidth onClick={handleCancel}>
+        Close
+      </Button>
+    );
+  } else if (type === 'ui-invalid_passphrase') {
+    body = (
+      <div className="grid gap-3">
+        <p className="text-sm text-ember">
+          The Trezor did not accept that passphrase.
+        </p>
+        <p className="text-sm text-steel">
+          A passphrase selects a wallet rather than unlocking one, so a typo
+          silently opens a different wallet with different addresses. Close
+          this and retry the action to enter it again.
+        </p>
+      </div>
+    );
+    footer = (
+      <Button variant="ghost" fullWidth onClick={handleCancel}>
+        Close
+      </Button>
+    );
   } else if (type === 'ui-error') {
     body = (
       <div className="grid gap-3">

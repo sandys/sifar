@@ -112,6 +112,11 @@ class TrezorConnectLike {
    */
   private generation = 0;
   private pendingUi: PendingUi | null = null;
+  /** The one live deviceEvents subscription, so re-acquires replace it. */
+  private deviceEventBinding: {
+    path: string;
+    listener: (event: any) => void;
+  } | null = null;
   private emitter = new SimpleEmitter();
   private debug =
     typeof process !== 'undefined' &&
@@ -200,6 +205,7 @@ class TrezorConnectLike {
 
   async dispose() {
     this.generation += 1;
+    this.detachDeviceEventListener();
     // Release the session rather than only dropping our reference, or the
     // sessions background keeps it marked as held and the next acquire has to
     // steal it, forcing a device reset.
@@ -255,6 +261,8 @@ class TrezorConnectLike {
         // ignore
       }
       this.session = null;
+      // The subscription is only meaningful while a session is held.
+      this.detachDeviceEventListener();
     }
   }
 
@@ -375,6 +383,7 @@ class TrezorConnectLike {
    * safely resumed. Explicit lock/disconnect clears both.
    */
   private dropTransportSession() {
+    this.detachDeviceEventListener();
     if (this.transport && this.session) {
       try {
         (this.transport as any).releaseSync(this.session);
@@ -500,16 +509,7 @@ class TrezorConnectLike {
     this.descriptor = descriptor;
     this.log('Session acquired', descriptor.path);
 
-    this.transport.deviceEvents.on(descriptor.path, (event: any) => {
-      this.log('Device event', event?.type);
-      if (event.type === 'transport-device_disconnected') {
-        this.session = null;
-        this.descriptor = null;
-        this.features = null;
-        this.deviceSessionId = null;
-        this.emitUi({ type: 'ui-no_transport' });
-      }
-    });
+    this.attachDeviceEventListener(descriptor.path);
 
     try {
       const resumableSession = getResumableDeviceSessionId(this.deviceSessionId);
@@ -522,6 +522,45 @@ class TrezorConnectLike {
       }
     } catch {
       // Ignore initialize failures; subsequent calls will surface issues.
+    }
+  }
+
+  /**
+   * Subscribe to unplug notifications for exactly one descriptor at a time.
+   *
+   * `ensureSession` runs again after every transport-session drop — an
+   * auto-lock, another tab stealing the device, an explicit cancel — and the
+   * transport itself outlives all of those. Registering without detaching left
+   * one listener per re-acquire on the same long-lived emitter, growing for the
+   * lifetime of the tab and re-firing the teardown for each.
+   */
+  private attachDeviceEventListener(path: string) {
+    this.detachDeviceEventListener();
+    if (!this.transport) return;
+
+    const listener = (event: any) => {
+      this.log('Device event', event?.type);
+      if (event.type === 'transport-device_disconnected') {
+        this.session = null;
+        this.descriptor = null;
+        this.features = null;
+        this.deviceSessionId = null;
+        this.emitUi({ type: 'ui-no_transport' });
+      }
+    };
+
+    this.deviceEventBinding = { path, listener };
+    this.transport.deviceEvents.on(path as any, listener);
+  }
+
+  private detachDeviceEventListener() {
+    const binding = this.deviceEventBinding;
+    if (!binding) return;
+    this.deviceEventBinding = null;
+    try {
+      this.transport?.deviceEvents.off(binding.path as any, binding.listener);
+    } catch {
+      // Transport already torn down; dropping the reference is the point.
     }
   }
 
@@ -550,6 +589,8 @@ class TrezorConnectLike {
     let retriedAfterFeatures = false;
     let retriedAfterSession = false;
     let suppressUiError = false;
+    /** A precise prompt (e.g. ui-invalid_pin) already owns the UI. */
+    let specificUiEmitted = false;
     try {
       this.log('Call', name);
       let response = await transport.call({
@@ -612,6 +653,11 @@ class TrezorConnectLike {
 
           if (message?.code === 7) {
             this.emitUi({ type: 'ui-invalid_pin' });
+            // Keep this prompt: the generic ui-error below would replace the
+            // specific "Invalid PIN" explanation, and during enumeration the
+            // close_window in `finally` would dismiss it outright, leaving the
+            // user with no indication of why the device refused.
+            specificUiEmitted = true;
           }
           throw new Error(errorMessage);
         }
@@ -729,7 +775,7 @@ class TrezorConnectLike {
       }
       suppressUiError =
         name === 'SolanaGetAddress' || /Trezor_Disconnected/.test(message);
-      if (!suppressUiError) {
+      if (!suppressUiError && !specificUiEmitted) {
         this.emitUi({
           type: 'ui-error',
           payload: { message }
@@ -743,7 +789,13 @@ class TrezorConnectLike {
       // many queued calls, and one of them completing used to dismiss a live
       // PIN/passphrase dialog while the device sat waiting for the answer —
       // the UI went blank and the flow only reappeared on a fresh Connect.
-      if ((!hadError || suppressUiError) && !this.pendingUi) {
+      // A specific failure prompt is equally load-bearing and equally must not
+      // be closed from here.
+      if (
+        (!hadError || suppressUiError) &&
+        !this.pendingUi &&
+        !specificUiEmitted
+      ) {
         this.emitUi({ type: 'ui-close_window' });
       }
     }

@@ -15,6 +15,7 @@ import {
   approveBatchRequest,
   approveAndSendRequest,
   approveMessageRequest,
+  isRequestAnsweredError,
   rejectCurrentRequest
 } from '@/lib/signing';
 
@@ -114,10 +115,15 @@ export function SigningSheet() {
       });
       // The dApp is still blocked on this request id; answer it rather than
       // letting it time out. Outside the op, so a gate rejection still answers.
-      try {
-        await rejectCurrentRequest();
-      } catch (rejectErr) {
-        console.warn('[Signing] reject after failure failed:', rejectErr);
+      // Unless it has already been answered accurately (e.g. a broadcast
+      // failure), in which case a second response would replace the real
+      // reason with a false "user rejected".
+      if (!isRequestAnsweredError(err)) {
+        try {
+          await rejectCurrentRequest();
+        } catch (rejectErr) {
+          console.warn('[Signing] reject after failure failed:', rejectErr);
+        }
       }
     } finally {
       setSigning(false);

@@ -15,6 +15,40 @@ import { verifyTrezorSolanaMessageResult } from './solanaMessageSigning';
 import { prepareWalletConnectSolanaMessage } from './walletConnectSolanaMessage';
 
 /**
+ * Error codes returned to dApps.
+ *
+ * A dApp branches on these, so they must describe what actually happened.
+ * Reporting everything as 4001 tells the dApp the user declined, which is a
+ * lie for a broadcast failure and makes the failure undiagnosable from the
+ * other side.
+ */
+export const WC_ERROR_USER_REJECTED = 4001;
+/** EIP-1193 "resource unavailable": another request is already awaiting input. */
+export const WC_ERROR_REQUEST_PENDING = -32002;
+/** EIP-1474 "transaction rejected": signed, but the network would not take it. */
+export const WC_ERROR_TRANSACTION_FAILED = -32003;
+
+/**
+ * Thrown when the dApp has already been given a final answer for this request.
+ *
+ * The UI catch-all rejects any request that fails, which is what stops a dApp
+ * hanging. Without this marker that safety net would send a second, wrong
+ * response (4001) on top of the accurate one already on the wire.
+ */
+export class RequestAnsweredError extends Error {
+  readonly requestAnswered = true;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'RequestAnsweredError';
+  }
+}
+
+export function isRequestAnsweredError(error: unknown): boolean {
+  return !!(error as { requestAnswered?: boolean } | null)?.requestAnswered;
+}
+
+/**
  * Convert hex signature to 64-byte Buffer.
  * Trezor returns signature as hex string (128 chars = 64 bytes).
  */
@@ -200,6 +234,26 @@ export async function handleSessionRequest(event: {
     chainId,
     params: JSON.stringify(params).substring(0, 200) + '...'
   });
+
+  // One request at a time. Staging a second one would overwrite `pendingRequest`
+  // and silently strand the first: it disappears from the UI while its dApp
+  // stays blocked on an id that can now never be answered. Refuse the newcomer
+  // instead — it is the one that can still be retried.
+  const inFlight = useAppStore.getState().pendingRequest;
+  if (inFlight && !(inFlight.topic === topic && inFlight.requestId === id)) {
+    console.warn('[Signing] Rejecting request: another is awaiting approval', {
+      incomingId: id,
+      awaitingId: inFlight.requestId
+    });
+    await rejectSessionRequest(
+      topic,
+      id,
+      'Sifar is already waiting for approval of another request. ' +
+        'Answer that one first, then send this again.',
+      WC_ERROR_REQUEST_PENDING
+    );
+    return;
+  }
 
   try {
     switch (method) {
@@ -396,6 +450,8 @@ async function handleSolanaSignAndSendTransaction(
   params: any
 ) {
   const txBase64 = typeof params === 'string' ? params : params.transaction;
+  if (!txBase64) throw new Error('No transaction data in request');
+
   const txBytes = Buffer.from(txBase64, 'base64');
 
   let messageBytes: Uint8Array;
@@ -451,10 +507,35 @@ export async function approveAndSendRequest() {
       ? new URL(DEFAULT_SOLANA_RPC, window.location.origin).toString()
       : DEFAULT_SOLANA_RPC;
   const connection = new Connection(rpcUrl, 'confirmed');
-  const txHash = await connection.sendRawTransaction(signedTxBytes, {
-    skipPreflight: false,
-    preflightCommitment: 'confirmed'
-  });
+
+  let txHash: string;
+  try {
+    txHash = await connection.sendRawTransaction(signedTxBytes, {
+      skipPreflight: false,
+      preflightCommitment: 'confirmed'
+    });
+  } catch (error: any) {
+    // The device already signed. Letting this propagate as a plain error made
+    // the UI's catch-all answer the dApp with 4001 "User rejected" — wrong on
+    // both counts: the user approved, and a send that timed out may still
+    // confirm on chain. Answer accurately here and mark it as answered.
+    const detail = error?.message || 'Unknown broadcast error';
+    console.error('[Signing] Broadcast failed after signing:', detail);
+    try {
+      await rejectSessionRequest(
+        pending.topic,
+        pending.requestId,
+        `Transaction was signed but could not be broadcast: ${detail}. ` +
+          'It may still confirm — check the account before signing again.',
+        WC_ERROR_TRANSACTION_FAILED
+      );
+    } finally {
+      store.clearPendingRequest();
+    }
+    throw new RequestAnsweredError(
+      `Signed, but broadcasting failed: ${detail}`
+    );
+  }
 
   try {
     await respondToSessionRequest(pending.topic, pending.requestId, {

@@ -125,8 +125,10 @@ bash "$(git rev-parse --show-toplevel)/.agents/hooks/pre-commit"
 It lints every skill (frontmatter present, `name` matching its directory, a
 `description` present) and scans staged `.agents/` changes for secrets. Fix
 anything it reports. Confirm the layout is intact: `ls -la` at the repo root
-must show `AGENTS.md` and `CLAUDE.md` as symlinks into `.agents/`, and
-`.claude/skills -> ../.agents/skills`.
+must show `AGENTS.md` as a symlink to `.agents/REPO_GUIDE.md`, and
+`.claude/skills -> ../.agents/skills`. `CLAUDE.md` is deliberately a real file
+with its own Claude Code instructions that cross-reference the guide — do not
+replace it with a symlink.
 
 ## Step 7 - Report
 

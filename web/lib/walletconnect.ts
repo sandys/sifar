@@ -290,7 +290,11 @@ export async function respondToSessionRequest(
 export async function rejectSessionRequest(
   topic: string,
   requestId: number,
-  message = 'User rejected the request'
+  message = 'User rejected the request',
+  // 4001 means "the user declined". Callers reporting anything else — a
+  // broadcast failure, a busy wallet — must pass the code that matches, or the
+  // dApp acts on a rejection that never happened.
+  code = 4001
 ): Promise<void> {
   const wallet = getWeb3Wallet();
   await wallet.respondSessionRequest({
@@ -299,7 +303,7 @@ export async function rejectSessionRequest(
       id: requestId,
       jsonrpc: '2.0',
       error: {
-        code: 4001,
+        code,
         message
       }
     }

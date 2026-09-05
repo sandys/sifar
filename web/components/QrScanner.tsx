@@ -7,6 +7,7 @@ import { decodeQrFromBlob, decodeQrFromSource } from '@/lib/qrDecode';
 type ScanState =
   | { kind: 'starting' }
   | { kind: 'scanning' }
+  | { kind: 'paused' }
   | { kind: 'unavailable'; message: string }
   | { kind: 'denied'; message: string }
   | { kind: 'failed'; message: string };
@@ -183,18 +184,41 @@ export function QrScanner({ onDecode, hint }: QrScannerProps) {
 
   // Release the camera when the tab is backgrounded, or Android Chrome leaves
   // the camera indicator lit while the app is not visible.
+  //
+  // Resuming is not optional: stop() kills the stream and the decode loop but
+  // leaves the video element mounted, so without this the user came back to a
+  // black frame with a live-looking reticle, no scanning, and no way to recover
+  // short of closing the sheet.
   useEffect(() => {
     if (typeof document === 'undefined') return;
-    const onHide = () => {
-      if (document.visibilityState === 'hidden') stop();
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        // Only a scan in progress becomes 'paused'; an error state must keep
+        // its message rather than be replaced by a resume prompt.
+        setState((current) =>
+          current.kind === 'scanning' || current.kind === 'starting'
+            ? { kind: 'paused' }
+            : current
+        );
+        stop();
+        return;
+      }
+      if (document.visibilityState === 'visible') {
+        setState((current) => {
+          if (current.kind === 'paused') void start();
+          return current;
+        });
+      }
     };
-    document.addEventListener('visibilitychange', onHide);
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('pagehide', stop);
     return () => {
-      document.removeEventListener('visibilitychange', onHide);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('pagehide', stop);
     };
-  }, [stop]);
+  }, [start, stop]);
 
   const toggleTorch = async () => {
     const track = streamRef.current?.getVideoTracks()[0];
@@ -227,6 +251,14 @@ export function QrScanner({ onDecode, hint }: QrScannerProps) {
   // the stream arrives; `scanning` is what decides whether it has a picture.
   const mounted = state.kind === 'scanning' || state.kind === 'starting';
   const live = state.kind === 'scanning';
+  const offlineMessage =
+    state.kind === 'paused'
+      ? 'Camera paused while the app was in the background.'
+      : state.kind === 'unavailable' ||
+          state.kind === 'denied' ||
+          state.kind === 'failed'
+        ? state.message
+        : null;
 
   return (
     <div className="grid gap-3">
@@ -252,9 +284,9 @@ export function QrScanner({ onDecode, hint }: QrScannerProps) {
             <div className="h-48 w-48 rounded-2xl border-2 border-white/80 shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]" />
           </div>
         )}
-        {!mounted && (
+        {offlineMessage && (
           <p className="px-4 py-10 text-center text-sm text-white/80">
-            {state.message}
+            {offlineMessage}
           </p>
         )}
       </div>
@@ -271,9 +303,11 @@ export function QrScanner({ onDecode, hint }: QrScannerProps) {
         </Button>
       )}
 
-      {(state.kind === 'denied' || state.kind === 'failed') && (
+      {(state.kind === 'denied' ||
+        state.kind === 'failed' ||
+        state.kind === 'paused') && (
         <Button variant="ghost" onClick={start}>
-          Try camera again
+          {state.kind === 'paused' ? 'Resume camera' : 'Try camera again'}
         </Button>
       )}
 
